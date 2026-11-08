@@ -72,6 +72,8 @@ class CallConfig:
     filler_after: float = 3.0
     max_calls: int = 1
     ring_timeout: int = 45  # outgoing calls: seconds to wait for an answer
+    ring_attempts: int = 2  # rings before the message goes out as text
+    ring_pause: float = 15.0  # seconds between rings
     silence_ms: int = 800  # this much non-speech ends the caller's turn
     vad_level: int = (
         2  # WebRTC VAD aggressiveness 0-3: higher rejects more noise, misses soft speech
@@ -329,30 +331,34 @@ class CallController:
             await asyncio.sleep(0.25)
         if self._busy():
             return "busy: another call is in progress"
-        proposal = str(uuid.uuid4())
-        ringing = self._ringing[proposal] = Ringing(peer)
-        try:
-            self._jmi(peer, "propose", proposal, propose=True)
+        outcome = ""
+        for attempt in range(max(1, self.config.ring_attempts)):
+            if attempt:
+                await asyncio.sleep(self.config.ring_pause)  # the phone may only now be free
+            proposal = str(uuid.uuid4())
+            ringing = self._ringing[proposal] = Ringing(peer)
             try:
-                full = await asyncio.wait_for(ringing.answer, self.config.ring_timeout)
-            except TimeoutError:
-                self._jmi(peer, "retract", proposal)
-                await self._missed_call(peer, opening)
-                return "no answer: nobody picked up in time; the message was sent as text instead"
-            if full is None:
-                await self._missed_call(peer, opening)
-                return (
-                    "declined: the person rejected the call; the message was sent as text instead"
+                self._jmi(peer, "propose", proposal, propose=True)
+                try:
+                    full = await asyncio.wait_for(ringing.answer, self.config.ring_timeout)
+                except TimeoutError:
+                    self._jmi(peer, "retract", proposal)
+                    outcome = "no answer: nobody picked up in time"
+                    continue
+                if full is None:
+                    outcome = "declined: the person rejected the call"
+                    continue
+                return await self._offer(
+                    full, proposal, opening, uninterruptible, hang_up_after, topic, context
                 )
-            return await self._offer(
-                full, proposal, opening, uninterruptible, hang_up_after, topic, context
-            )
-        except Exception as error:
-            logging.exception("calls: outgoing call to %s failed", peer)
-            await self.end(proposal, "general-error", notify=True)
-            return f"failed: {error}"
-        finally:
-            self._ringing.pop(proposal, None)
+            except Exception as error:
+                logging.exception("calls: outgoing call to %s failed", peer)
+                await self.end(proposal, "general-error", notify=True)
+                return f"failed: {error}"
+            finally:
+                self._ringing.pop(proposal, None)
+        await self._missed_call(peer, opening)
+        return f"{outcome}; the message was sent as text instead"
 
     async def _offer(
         self,

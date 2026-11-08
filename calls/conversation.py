@@ -32,6 +32,12 @@ class Speech(Protocol):
     async def synthesize(self, text: str) -> np.ndarray: ...
 
 
+WORDS_WAIT = (
+    10.0  # hang-up grace: how long to wait for the transcript of something that sounded like speech
+)
+NOISE_GRACE = 2.0  # hang-up grace: time left to speak after noise turned out to hold no words
+
+
 class Turn:
     """What was said in the current reply and how much of it has been queued as audio."""
 
@@ -84,6 +90,7 @@ class Conversation:
         self._thinking = False
         self.hangup_grace = hangup_grace  # seconds the caller gets to speak before we hang up
         self._spoke = asyncio.Event()  # set whenever the caller starts to speak
+        self._utterances: asyncio.Queue[bool] = asyncio.Queue()  # did each utterance hold words?
         self._hear_lock = asyncio.Lock()
         self._background: set[asyncio.Task[None]] = set()
         self.speech, self.respond, self.on_hangup = speech, respond, on_hangup
@@ -162,12 +169,27 @@ class Conversation:
         if seconds <= 0:
             return False
         self._spoke.clear()
+        while not self._utterances.empty():
+            self._utterances.get_nowait()
         self.playback.play(warn_tone())
-        try:
-            await asyncio.wait_for(self._spoke.wait(), seconds)
-        except TimeoutError:
-            return False
-        return True
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while True:
+            try:
+                await asyncio.wait_for(self._spoke.wait(), max(0.0, deadline - loop.time()))
+            except TimeoutError:
+                return False
+            if self.barge_in != "queue":
+                return True
+            # Something sounded like speech. Only words keep the call open, not room noise.
+            try:
+                words = await asyncio.wait_for(self._utterances.get(), WORDS_WAIT)
+            except TimeoutError:
+                words = False
+            if words:
+                return True
+            self._spoke.clear()
+            deadline = max(deadline, loop.time() + NOISE_GRACE)
 
     def caller_muted(self) -> None:
         """Jingle `mute` from the caller is a "stopped talking" signal: do not wait for silence."""
@@ -243,11 +265,14 @@ class Conversation:
                 text = await retry(lambda: self.speech.transcribe(pcm))
             except Exception:
                 logging.exception("transcription failed")
+                self._utterances.put_nowait(False)
                 return
             if not text or is_phantom(text, len(pcm) / STT_RATE):
                 logging.info("heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text)
+                self._utterances.put_nowait(False)
                 return
             logging.info("caller: %s", text)
+            self._utterances.put_nowait(True)
             if self._task is None or self._task.done():
                 self._start_text(text)
             elif self._thinking and self.steer is not None and await self.steer(text):

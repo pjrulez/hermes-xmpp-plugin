@@ -954,6 +954,8 @@ class XmppAdapter(BasePlatformAdapter):
                 hangup_grace=self._calls_cfg["hangup_grace"],
                 recap=self._calls_cfg["recap"],
                 busy_wait=self._calls_cfg["busy_wait"],
+                ring_attempts=self._calls_cfg["ring_attempts"],
+                ring_pause=self._calls_cfg["ring_pause"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -3140,6 +3142,8 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "recap": _truthy(raw.get("recap", True)),
         "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
+        "ring_attempts": max(1, number("ring_attempts", 2, int)),
+        "ring_pause": max(0.0, number("ring_pause", 15.0, float)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 

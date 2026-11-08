@@ -324,6 +324,9 @@ Every option, with its default:
 | `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
 | `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
 | `ring_timeout` | `45` | Outgoing calls: stop ringing after this many seconds. |
+| `ring_attempts` | `2` | Outgoing calls: how many times to ring before the message is sent as text. A phone that was only just free, or whose call screen missed the first ring, gets a second try. `1` rings once. |
+| `ring_pause` | `15` | Seconds between rings. |
+| `busy_wait` | `90` | An outgoing call waits this long for the current call to end instead of failing as busy (a result can arrive just as a call ends). |
 
 Rules: only JIDs in `allowed_users` can call or be called; one call at a time (a second caller
 hears busy); DTLS-SRTP is required and Opus is the only codec. If the dependencies are not
@@ -334,7 +337,7 @@ installed the plugin logs a warning and chat keeps working.
 | Sound | Meaning |
 |---|---|
 | One short beep | It heard you finish speaking and is sending your turn to the agent. Any noise the voice detector takes for speech also gets one, even if the transcript turns out empty. |
-| Two falling beeps | The agent is about to hang up (after a goodbye or with `hang_up_after`). Speak within `hangup_grace` seconds to keep the call open. |
+| Two falling beeps | The agent is about to hang up (after a goodbye or with `hang_up_after`). Speak within `hangup_grace` seconds to keep the call open. Only recognised words count: room noise that the voice detector takes for speech does not cancel the hang-up (with `barge_in: queue`). |
 | "One moment." (spoken) | The agent is still working after `filler_after` seconds. |
 
 Short transcripts that are only a stock phrase such as "Thank you." or "Thanks for watching" are treated
