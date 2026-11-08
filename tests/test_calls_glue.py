@@ -68,7 +68,7 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 45,
-        "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [],
+        "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
     }
 
 
@@ -256,7 +256,7 @@ def test_tool_needs_a_target_when_several_users_are_allowed(monkeypatch):
     a._calls, a._calls_loop = object(), object()
     monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
     out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
-    assert out["success"] is False and "who to call" in out["status"]
+    assert out["success"] is False and "say who to call" in out["status"]
 
 
 def test_register_adds_the_tool_and_survives_old_hermes():
@@ -372,3 +372,45 @@ def test_plaintext_peers_are_never_omemo_encrypted():
     assert a._use_omemo("user@example.org", "chat") is on
     assert a._use_omemo("agent@example.org/res", "chat") is False
     assert a._use_omemo("room@conference.example.org", "groupchat") is False
+
+
+def test_callable_people_exclude_partner_agents_by_default():
+    a = make_adapter(
+        allowed_users="user@example.org,wife@example.org,agent@example.org",
+        plaintext_peers=["agent@example.org"],
+        calls={"enabled": True},
+    )
+    a._build_calls(MagicMock())
+    host = a._calls_host
+    assert host.callable_jids() == {"user@example.org", "wife@example.org"}
+    assert host.authorized("wife@example.org")
+    assert not host.authorized("agent@example.org")
+
+
+def test_ambiguous_target_lists_the_choices(monkeypatch):
+    a = make_adapter(allowed_users="a@example.org,b@example.org", calls={"enabled": True})
+    a._calls = a._build_calls(MagicMock())
+    a._calls_loop = object()
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
+    assert out["success"] is False
+    assert "a@example.org, b@example.org" in out["status"]
+
+
+def test_omemo_device_lists_are_downloaded_once_per_ten_minutes():
+    a = make_adapter()
+    calls = []
+
+    async def refresh(jids, force_download=False):
+        calls.append((sorted(str(j) for j in jids), force_download))
+
+    a.client = MagicMock()
+    a.client.__getitem__.return_value.refresh_device_lists = refresh
+
+    async def run():
+        await a._refresh_omemo_devices("User@Example.org/phone")
+        await a._refresh_omemo_devices("user@example.org")  # throttled
+        await a._refresh_omemo_devices("other@example.org")
+
+    asyncio.run(run())
+    assert calls == [(["user@example.org"], True), (["other@example.org"], True)]

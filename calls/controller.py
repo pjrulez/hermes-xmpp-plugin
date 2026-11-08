@@ -63,6 +63,7 @@ class CallConfig:
         2  # WebRTC VAD aggressiveness 0-3: higher rejects more noise, misses soft speech
     )
     ack_tone: bool = True  # short beep when an utterance is captured
+    hangup_grace: float = 5.0  # warning beeps, then this long to speak before a planned hang-up
     barge_in: str = (
         "queue"  # "queue": talk any time, it becomes the next turn; "stop": cut the agent off
     )
@@ -239,6 +240,7 @@ class CallController:
             ack_tone_enabled=config.ack_tone,
             fallback_text=lambda text: self.host.post_text(bare, text),
             barge_in=config.barge_in,
+            hangup_grace=config.hangup_grace,
             steer=lambda text: self.host.steer(bare, sid, text),
         )
 
@@ -333,7 +335,8 @@ class CallController:
             return
         if hang_up_after:
             await convo.playback.wait_idle()
-            await self.end(sid, "success", notify=True)
+            if not await convo.grace(self.config.hangup_grace):
+                await self.end(sid, "success", notify=True)
 
     async def _greet(self, call: Call) -> None:
         await call.media.connected.wait()

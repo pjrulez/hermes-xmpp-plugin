@@ -4,8 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `xmpp.plaintext_peers`: bare JIDs that never get OMEMO-encrypted messages.
+- `xmpp.calls.allowed_users` and `xmpp.calls.hangup_grace` (warning beeps and a speaking
+  window before a planned hang-up).
+
 ### Fixed
 
+- OMEMO: download a contact's device list before encrypting to them. slixmpp-omemo skips
+  the download under mutual presence, so a fresh store failed with NoEligibleDevices.
 - Preserve outgoing voice SFS metadata, file hash, and upload URL by appending
   the populated Slixmpp stanza. Send matching URL/body/OOB fallback for client
   compatibility, with a whole-body XEP-0428 marker. Real serialization tests

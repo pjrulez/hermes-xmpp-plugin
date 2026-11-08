@@ -136,6 +136,14 @@ the server. This may take a few seconds — the adapter waits for initialization
 before sending encrypted messages. If the recipient hasn't published device keys
 yet, messages fall back to plaintext (with a log warning).
 
+Before encrypting to a contact the adapter downloads their OMEMO device list (at most
+once per 10 minutes). Without this, a fresh account that has not yet heard from the contact
+fails with "NoEligibleDevices" even when presence is mutual.
+
+To skip OMEMO for specific peers, such as another agent on your own trusted server, set
+`xmpp.plaintext_peers` (or `XMPP_PLAINTEXT_PEERS`) to a list of bare JIDs. This lowers
+security for those peers only; it is off by default.
+
 MUC OMEMO is supported when all participants have compatible devices, but group
 encryption reliability varies by client. 1:1 encryption is the primary use case.
 
@@ -310,6 +318,8 @@ Every option, with its default:
 | `silence_ms` | `800` | Pause that ends your turn. Raise it (1000-1500) if you get cut off while thinking; lower it for snappier answers. |
 | `vad_level` | `2` | Noise rejection, 0-3. Higher ignores more background noise but may miss soft speech. Steady hum, fans and hiss are ignored at every level. |
 | `ack_tone` | `true` | A short beep when your turn is captured, so you know it heard you finish. |
+| `hangup_grace` | `5` | Seconds you get to speak, after two falling warning beeps, before the agent hangs up (a goodbye, or `hang_up_after`). Speaking cancels the hang-up. `0` hangs up at once. |
+| `allowed_users` | all allowed users except `plaintext_peers` | Who may call, and be called by, the agent. Several people are fine; with more than one the `xmpp_call` tool needs `to`. List explicit JIDs to restrict it. |
 | `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
 | `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
 | `ring_timeout` | `45` | Outgoing calls: stop ringing after this many seconds. |

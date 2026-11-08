@@ -60,6 +60,7 @@ import logging
 import mimetypes
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
@@ -603,6 +604,7 @@ class XmppAdapter(BasePlatformAdapter):
         self._calls_host: Optional[Any] = None  # calls.hermes_host.HermesCallHost
         self._calls_loop: Optional[asyncio.AbstractEventLoop] = None  # loop that owns the calls
         self._calls_key = ""  # Hermes home this adapter registered its calls under
+        self._omemo_refreshed: Dict[str, float] = {}  # peer -> monotonic time of last device list download
         self._plaintext_peers: frozenset = frozenset(
             self._bare(j.strip()).lower()
             for j in _csv(extra.get("plaintext_peers", _scoped_getenv("XMPP_PLAINTEXT_PEERS", ""))).split(",")
@@ -880,6 +882,7 @@ class XmppAdapter(BasePlatformAdapter):
                 vad_level=self._calls_cfg["vad_level"],
                 ack_tone=self._calls_cfg["ack_tone"],
                 barge_in=self._calls_cfg["barge_in"],
+                hangup_grace=self._calls_cfg["hangup_grace"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -909,6 +912,25 @@ class XmppAdapter(BasePlatformAdapter):
             and mtype == "chat"
             and self._bare(chat_id).lower() not in self._plaintext_peers
         )
+
+    async def _refresh_omemo_devices(self, jid: Any) -> None:
+        """Download the peer's OMEMO device list before encrypting to them.
+
+        slixmpp-omemo skips the download whenever presence is mutual ("both"), trusting PEP
+        notifications to keep its cache current. If that notification never arrived (the usual
+        case for a fresh account or store), the cache stays empty and encryption fails with
+        NoEligibleDevices. Throttled to one download per peer per 10 minutes.
+        """
+        bare = self._bare(str(jid)).lower()
+        now = time.monotonic()
+        if now - self._omemo_refreshed.get(bare, -1e9) < 600:
+            return
+        self._omemo_refreshed[bare] = now
+        try:
+            await self.client["xep_0384"].refresh_device_lists({JID(bare)}, force_download=True)  # type: ignore[index]
+        except Exception:
+            self._omemo_refreshed.pop(bare, None)  # try again on the next send
+            logger.debug("xmpp: OMEMO device list refresh for %s failed", bare, exc_info=True)
 
     async def _connect_watchdog(self) -> None:
         try:
@@ -1873,6 +1895,7 @@ class XmppAdapter(BasePlatformAdapter):
                 try:
                     xep_0384 = client_local["xep_0384"]
                     recipient_jid = JID(chat_id)
+                    await self._refresh_omemo_devices(recipient_jid)
                     encrypted, errors = await xep_0384.encrypt_message(stanza, {recipient_jid})
                     if errors:
                         logger.info("OMEMO: edit encryption non-critical errors: %s", errors)
@@ -2021,6 +2044,7 @@ class XmppAdapter(BasePlatformAdapter):
         stanza.set_from(client_local.boundjid)
 
         recipient_jid = JID(chat_id)
+        await self._refresh_omemo_devices(recipient_jid)
         message, encryption_errors = await xep_0384.encrypt_message(stanza, {recipient_jid})
 
         if encryption_errors:
@@ -2885,10 +2909,11 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
     opening = str((args or {}).get("opening") or "").strip()
     if not opening:
         return result(False, "an opening line is required")
-    allowed = sorted(getattr(adapter_._calls_host, "callers", None) or adapter_.allowed_users)
+    host = adapter_._calls_host
+    allowed = sorted(host.callable_jids() if hasattr(host, "callable_jids") else adapter_.allowed_users)
     target = adapter_._bare(str(args.get("to") or "")) if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
     if not target:
-        return result(False, "say who to call: more than one user is allowed")
+        return result(False, "say who to call with `to`; one of: " + ", ".join(allowed))
     try:
         if asyncio.get_running_loop() is adapter_._calls_loop:
             return result(False, "cannot place a call from the XMPP event loop thread")
@@ -2933,6 +2958,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "allowed_users": sorted(
             {j.strip().lower() for j in _csv(raw.get("allowed_users", "")).split(",") if j.strip()}
         ),
+        "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 

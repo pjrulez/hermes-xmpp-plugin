@@ -89,9 +89,17 @@ class HermesCallHost:
         self._count = 0
 
     def authorized(self, bare_jid: str) -> bool:
-        if self.callers and bare_jid.lower() not in self.callers:
+        if bare_jid.lower() not in self.callable_jids():
             return False  # e.g. a partner agent that may chat but must never phone
         return self.adapter._is_authorized(chat_type="dm", chat_id=bare_jid, user_jid=bare_jid)
+
+    def callable_jids(self) -> set[str]:
+        """Who may call or be called: `calls.allowed_users` if set, else every allowed user
+        except the partner agents (`plaintext_peers`)."""
+        if self.callers:
+            return set(self.callers)
+        peers = getattr(self.adapter, "_plaintext_peers", frozenset())
+        return {j.lower() for j in self.adapter.allowed_users} - set(peers)
 
     async def ask(self, peer: str, call_id: str, text: str) -> str:
         from gateway.platforms.base import (  # type: ignore[import-not-found]

@@ -18,6 +18,7 @@ from .audio import (
     SpeechHeld,
     Utterance,
     ack_tone,
+    warn_tone,
 )
 from .speech import sentences, split_hangup
 
@@ -71,6 +72,7 @@ class Conversation:
         ack_tone_enabled: bool = True,
         fallback_text: Callable[[str], Awaitable[None]] | None = None,
         barge_in: str = "queue",
+        hangup_grace: float = 5.0,
         steer: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         # "queue": the caller can talk while the agent talks; nothing is cut off and what they say
@@ -80,6 +82,8 @@ class Conversation:
         self.steer = steer
         self._queued: list[str] = []
         self._thinking = False
+        self.hangup_grace = hangup_grace  # seconds the caller gets to speak before we hang up
+        self._spoke = asyncio.Event()  # set whenever the caller starts to speak
         self._hear_lock = asyncio.Lock()
         self._background: set[asyncio.Task[None]] = set()
         self.speech, self.respond, self.on_hangup = speech, respond, on_hangup
@@ -141,6 +145,19 @@ class Conversation:
                 self._protected = False
                 self._endpointer.reset()  # whatever they said meanwhile was not for us
 
+    async def grace(self, seconds: float) -> bool:
+        """About to hang up: warn with two falling beeps and give the caller `seconds` to speak.
+        True if they did (the call goes on), False if it is time to hang up."""
+        if seconds <= 0:
+            return False
+        self._spoke.clear()
+        self.playback.play(warn_tone())
+        try:
+            await asyncio.wait_for(self._spoke.wait(), seconds)
+        except TimeoutError:
+            return False
+        return True
+
     def caller_muted(self) -> None:
         """Jingle `mute` from the caller is a "stopped talking" signal: do not wait for silence."""
         if self._protected:
@@ -169,6 +186,7 @@ class Conversation:
                     continue  # speaking a briefing: the caller's audio is read and dropped
                 for event in endpointer.feed(pcm):
                     if isinstance(event, SpeechHeld):
+                        self._spoke.set()
                         if self.barge_in == "stop":
                             self._barge_in()
                     elif isinstance(event, Utterance):
@@ -266,7 +284,7 @@ class Conversation:
                 time.monotonic() - t2,
             )
             await self.playback.wait_idle()
-            if hangup:
+            if hangup and not await self.grace(self.hangup_grace):
                 await self.on_hangup()
             elif self._queued:  # said while we were busy: that is the next turn
                 self._start_text(" ".join(self._queued))

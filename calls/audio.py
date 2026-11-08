@@ -146,6 +146,16 @@ def ack_tone() -> np.ndarray:
     return (np.sin(2 * np.pi * 880 * t) * np.hanning(len(t)) * 3500).astype(np.int16)
 
 
+def warn_tone() -> np.ndarray:
+    """Two falling beeps: "this call ends in a few seconds unless you speak"."""
+    parts: list[np.ndarray] = []
+    for hz in (880, 660):
+        t = np.arange(int(OUT_RATE * 0.12)) / OUT_RATE
+        parts.append((np.sin(2 * np.pi * hz * t) * np.hanning(len(t)) * 4500).astype(np.int16))
+        parts.append(np.zeros(int(OUT_RATE * 0.06), np.int16))
+    return np.concatenate(parts)
+
+
 def wav_bytes(pcm: np.ndarray, rate: int = STT_RATE) -> bytes:
     out = io.BytesIO()
     with wave.open(out, "wb") as wav:
