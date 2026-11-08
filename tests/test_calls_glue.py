@@ -307,7 +307,7 @@ def test_steer_sends_a_steer_command_for_the_pending_turn(monkeypatch):
     assert sent[0].text == "/steer also check email"
     assert sent[0].message_id.startswith("call-steer-")
     assert sent[0].source.thread_id == "call-sid"
-    assert host.capture("user@example.org", "ack", sent[0].message_id) is False
+    assert host.capture("user@example.org", "ack", sent[0].message_id) is True  # ack stays out of chat
 
 
 def test_each_profile_in_one_gateway_finds_its_own_adapter(monkeypatch, tmp_path):
