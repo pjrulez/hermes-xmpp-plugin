@@ -908,6 +908,7 @@ class XmppAdapter(BasePlatformAdapter):
                 ack_tone=self._calls_cfg["ack_tone"],
                 barge_in=self._calls_cfg["barge_in"],
                 hangup_grace=self._calls_cfg["hangup_grace"],
+                recap=self._calls_cfg["recap"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -2936,6 +2937,11 @@ _CALL_TOOL_SCHEMA = {
                 "type": "boolean",
                 "description": "True to end the call when the opening is done instead of taking questions.",
             },
+            "context": {
+                "type": "string",
+                "description": "Background to keep for follow-up questions during the call (never "
+                "spoken), such as a reference and the steps to use when the person asks for a change.",
+            },
             "topic": {
                 "type": "string",
                 "description": "Short name of what the call is about (e.g. a cron job name). "
@@ -2986,6 +2992,7 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             uninterruptible=_truthy(args.get("uninterruptible")),
             hang_up_after=_truthy(args.get("hang_up_after")),
             topic=str(args.get("topic") or "")[:60],
+            context=str(args.get("context") or "")[:3000],
         ),
         adapter_._calls_loop,)
     try:
@@ -3021,6 +3028,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
             {j.strip().lower() for j in _csv(raw.get("allowed_users", "")).split(",") if j.strip()}
         ),
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
+        "recap": _truthy(raw.get("recap", True)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 

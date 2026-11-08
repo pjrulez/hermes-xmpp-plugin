@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 from . import turn
 from .audio import Endpointer, webrtc_vad
 from .conversation import Conversation, Speech
+from .speech import clean, split_hangup
 from .jingle import wire
 from .jingle.model import JINGLE, RTP, Jingle, JingleError
 from .jingle.session import IllegalTransition, Session
@@ -31,6 +32,11 @@ CALL_FEATURES = (
 )
 
 
+RECAP_PROMPT = (
+    "[The call has ended. In one or two plain sentences for a chat message, say what the person "
+    "asked for or wanted changed during the call and what you did about it. If they asked for "
+    "nothing, reply exactly NONE.]"
+)
 MISSED_CALL = "I tried to call you but nobody picked up. What I wanted to say:\n\n{opening}"
 
 
@@ -72,6 +78,7 @@ class CallConfig:
     )
     ack_tone: bool = True  # short beep when an utterance is captured
     hangup_grace: float = 5.0  # warning beeps, then this long to speak before a planned hang-up
+    recap: bool = True  # after a call with talk in it, text the person what was asked and done
     barge_in: str = (
         "queue"  # "queue": talk any time, it becomes the next turn; "stop": cut the agent off
     )
@@ -265,6 +272,15 @@ class CallController:
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
+    async def _recap(self, bare: str, sid: str) -> None:
+        """After the call: ask the call's own agent session what was asked, and text the answer."""
+        try:
+            reply = clean(split_hangup(await self.host.ask(bare, sid, RECAP_PROMPT))[0]).strip()
+            if reply and reply.strip(" .").upper() != "NONE":
+                await self.host.post_text(bare, f"Call recap: {reply}")
+        except Exception:
+            logging.exception("calls: the call recap failed")
+
     async def _missed_call(self, peer: str, opening: str) -> None:
         """Nobody answered: send the message as text and remember it for a call back."""
         bare = peer.split("/", 1)[0]
@@ -284,6 +300,7 @@ class CallController:
         uninterruptible: bool = False,
         hang_up_after: bool = False,
         topic: str = "",
+        context: str = "",
     ) -> str:
         """Call `peer` (bare JID) and, when answered, say `opening`. Returns a status sentence.
 
@@ -312,7 +329,9 @@ class CallController:
                 return (
                     "declined: the person rejected the call; the message was sent as text instead"
                 )
-            return await self._offer(full, proposal, opening, uninterruptible, hang_up_after, topic)
+            return await self._offer(
+                full, proposal, opening, uninterruptible, hang_up_after, topic, context
+            )
         except Exception as error:
             logging.exception("calls: outgoing call to %s failed", peer)
             await self.end(proposal, "general-error", notify=True)
@@ -328,10 +347,11 @@ class CallController:
         uninterruptible: bool,
         hang_up_after: bool,
         topic: str = "",
+        context: str = "",
     ) -> str:
         session = Session(sid, we_initiated=True)
         convo = self._conversation(sid, full.split("/", 1)[0])
-        convo.remember(opening)
+        convo.remember(opening, context)
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[sid] = Call(full, session, media, convo)
         convo.prepare(opening)  # synthesized while the phone rings
@@ -402,6 +422,10 @@ class CallController:
         call = self.calls.pop(sid, None)
         peer = notify if isinstance(notify, str) else (call.peer if call and notify else None)
         if call is not None:
+            if self.config.recap and call.convo.turns:
+                task = asyncio.create_task(self._recap(call.peer.split("/", 1)[0], sid))
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
             call.convo.stop()
             for task in call.tasks:
                 if task is not asyncio.current_task():

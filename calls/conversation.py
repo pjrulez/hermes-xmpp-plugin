@@ -103,6 +103,7 @@ class Conversation:
         self._listener: asyncio.Task[None] | None = None
         self._turn: Turn | None = None
         self._note = ""
+        self.turns = 0  # caller turns the agent has answered
 
     def attach(self, incoming: MediaStreamTrack) -> MediaStreamTrack:
         """CallMedia hook: start listening to the caller, return the track we speak on."""
@@ -128,9 +129,12 @@ class Conversation:
     async def _synth(self, text: str) -> np.ndarray:
         return await retry(lambda: self.speech.synthesize(text))
 
-    def remember(self, spoken: str) -> None:
-        """Tell the agent, on its next turn, what it said before the caller spoke."""
+    def remember(self, spoken: str, context: str = "") -> None:
+        """Tell the agent, on its next turn, what it said before the caller spoke, plus any
+        `context` the agent that placed the call wants to keep (never spoken aloud)."""
         self._note = f"[You placed this call and began by saying: {spoken}] "
+        if context:
+            self._note += f"[Background for this call, not for the person: {context}] "
 
     def remember_missed(self, text: str) -> None:
         """The caller is calling back after a call we placed that nobody answered."""
@@ -282,6 +286,7 @@ class Conversation:
             t1 = time.monotonic()
             reply, hangup = split_hangup(await self._answer(self._note + text))
             self._note = ""
+            self.turns += 1
             self._turn_pcm = None  # answered: what the caller says next is a new turn
             t2 = time.monotonic()
             logging.info("agent: %s", reply)

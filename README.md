@@ -319,6 +319,7 @@ Every option, with its default:
 | `vad_level` | `2` | Noise rejection, 0-3. Higher ignores more background noise but may miss soft speech. Steady hum, fans and hiss are ignored at every level. |
 | `ack_tone` | `true` | A short beep when your turn is captured, so you know it heard you finish. |
 | `hangup_grace` | `5` | Seconds you get to speak, after two falling warning beeps, before the agent hangs up (a goodbye, or `hang_up_after`). Speaking cancels the hang-up. `0` hangs up at once. |
+| `recap` | `true` | After a call in which you asked for something, the agent texts you one or two sentences saying what you asked and what it did about it (it is silent if you asked for nothing). |
 | `allowed_users` | all allowed users except `plaintext_peers` | Who may call, and be called by, the agent. Several people are fine; with more than one the `xmpp_call` tool needs `to`. List explicit JIDs to restrict it. |
 | `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
 | `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
