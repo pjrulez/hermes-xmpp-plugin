@@ -597,6 +597,10 @@ class XmppAdapter(BasePlatformAdapter):
         # an outage and escalate it to a reconnect (#28919).
         self._closing = False
         self._self_bare = self._bare(self.jid)
+        # Audio calls (Jingle RTP). Off by default; see the README "Audio calls" section.
+        self._calls_cfg: Dict[str, Any] = _calls_settings(extra)
+        self._calls: Optional[Any] = None  # calls.controller.CallController while connected
+        self._calls_host: Optional[Any] = None  # calls.hermes_host.HermesCallHost
         self._known_mucs = {r.room for r in self.muc_rooms}
         # Bare JIDs we have observed sending us 1:1 ("chat") messages. Used to
         # keep _is_muc() from misclassifying a real user as a group when the
@@ -756,6 +760,7 @@ class XmppAdapter(BasePlatformAdapter):
         # plugins (xep_0030, xep_0045, xep_0199, ...) key their own
         # post-connect setup off for exactly this reason.
         client.add_event_handler("session_bind", self._on_session_bind)
+        self._calls = self._build_calls(client) if not self._ephemeral_sender else None
         # slixmpp dispatches MUC stanzas to BOTH "message" and
         # "groupchat_message", so registering _on_message for both would run it
         # twice for every group-chat message. Register "message" only — it
@@ -836,6 +841,40 @@ class XmppAdapter(BasePlatformAdapter):
         self._mark_connected()
         return True
 
+    def _build_calls(self, client: Any) -> Optional[Any]:
+        """Create the call controller when calls are enabled and their dependencies import.
+
+        Never raises: a missing aiortc/av must not take chat down with it.
+        """
+        self._calls_host = None
+        if not self._calls_cfg["enabled"]:
+            return None
+        try:
+            from importlib import import_module
+
+            base = f"{__package__}.calls" if __package__ else "calls"
+            controller = import_module(f"{base}.controller")
+            host_module = import_module(f"{base}.hermes_host")
+            client.register_plugin("xep_0115")
+            self._calls_host = host_module.HermesCallHost(self)
+            config = controller.CallConfig(
+                max_seconds=self._calls_cfg["max_seconds"],
+                greeting=self._calls_cfg["greeting"],
+                filler_after=self._calls_cfg["filler_after"],
+            )
+            calls = controller.CallController(client, self._calls_host, config)
+            calls.install()
+            logger.info("xmpp: audio calls enabled")
+            return calls
+        except Exception as exc:
+            logger.warning(
+                "xmpp: calls are enabled but unavailable (%s); "
+                "install requirements-calls.txt. Chat continues without calls.",
+                exc,
+            )
+            self._calls_host = None
+            return None
+
     async def _connect_watchdog(self) -> None:
         try:
             await asyncio.wait_for(
@@ -858,6 +897,12 @@ class XmppAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        if self._calls is not None:
+            try:
+                await self._calls.close()  # hang up open calls while the stream is still up
+            except Exception:
+                logger.exception("xmpp: closing calls failed")
+            self._calls = self._calls_host = None
         # Capture the client once: teardown below must work from this
         # reference even though self.client is cleared unconditionally.
         client = self.client
@@ -1151,6 +1196,11 @@ class XmppAdapter(BasePlatformAdapter):
         if self._session_ready is not None:
             self._session_ready.set()
         logger.info("xmpp: marking session ready")
+        if self._calls is not None:
+            try:
+                await self._calls.advertise()  # before presence, so the caps hash covers calls
+            except Exception:
+                logger.exception("xmpp: advertising call features failed")
         try:
             self.client.send_presence()  # type: ignore[union-attr]
         except Exception:
@@ -1610,6 +1660,15 @@ class XmppAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if self.client is None or not getattr(self, "_running", True):
             return SendResult(success=False, error="xmpp not connected", retryable=True)
+
+        # A reply to a spoken call turn is read aloud by the call, not sent as text.
+        if (
+            self._calls_host is not None
+            and content
+            and not (voice_path or document_path or image_paths)
+            and self._calls_host.capture(self._bare(chat_id), content, reply_to)
+        ):
+            return SendResult(success=True)
 
         # Forward legacy media params to dedicated methods
         if voice_path:
@@ -2128,6 +2187,8 @@ class XmppAdapter(BasePlatformAdapter):
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
+        if self._calls_host is not None:
+            self._calls_host.complete(event.source.chat_id, event.message_id)
         if not self._reactions_allowed(event):
             return
         if outcome == ProcessingOutcome.CANCELLED:
@@ -2725,6 +2786,29 @@ async def _cache_audio_bytes(data: bytes, ext: str) -> str:
 # Registration helpers
 # ---------------------------------------------------------------------
 
+_CALL_GREETING = "Hi, I'm here. What can I do for you?"
+
+
+def _calls_settings(extra: Any) -> Dict[str, Any]:
+    """`xmpp.calls` options with safe fallbacks; a bad value never stops the adapter."""
+    raw = extra.get("calls") if isinstance(extra, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+
+    def number(key: str, default: float, kind: type) -> Any:
+        try:
+            return kind(raw.get(key, default))
+        except (TypeError, ValueError):
+            logger.warning("xmpp: invalid calls.%s %r, using %r", key, raw.get(key), default)
+            return kind(default)
+
+    return {
+        "enabled": _truthy(raw.get("enabled", _scoped_getenv("XMPP_CALLS_ENABLED", "false"))),
+        "max_seconds": number("max_seconds", 600, int),
+        "greeting": str(raw.get("greeting", _CALL_GREETING)),
+        "filler_after": number("filler_after", 3.0, float),
+    }
+
+
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -2905,7 +2989,7 @@ def _apply_yaml_config(yaml_cfg: dict, xmpp_cfg: dict) -> Optional[dict[str, Any
     for key in (
         "jid", "password", "host", "port", "direct_tls", "connect_timeout_secs",
         "muc_rooms", "muc_nick", "allowed_users", "muc_allowed_users", "allow_all_users", "max_message_length",
-        "voice_transcription", "voice_trusted_hosts",
+        "voice_transcription", "voice_trusted_hosts", "calls",
     ):
         if key in raw and key not in extra:
             extra[key] = raw[key]

@@ -281,6 +281,35 @@ proxies. Encrypted key-bearing URLs are never forwarded as agent text, even
 when transcription is disabled or a download fails. See
 [voice transport and security details](docs/voice-messages.md).
 
+### Audio calls (Jingle RTP, optional)
+
+Call the bot from Conversations, Dino or any client with audio calls and talk to the agent.
+Your speech is transcribed with the configured `stt` provider, the reply is a normal agent
+turn in your chat session (tools, memory and approvals apply), and it is spoken with the
+configured `tts` provider. Interrupt the agent by talking over it; say goodbye to end the call.
+This is turn-based speech, not full duplex: expect a few seconds of delay per turn.
+
+Enable it (off by default; needs `uv pip install -r requirements-calls.txt` in the Hermes
+environment):
+
+```yaml
+xmpp:
+  calls:
+    enabled: true          # or XMPP_CALLS_ENABLED=true
+    max_seconds: 600       # hang up after this long
+    greeting: "Hi, I'm here. What can I do for you?"   # "" for none
+    filler_after: 3.0      # say "One moment." if the agent takes longer than this
+```
+
+Rules: only JIDs in `allowed_users` can call; one call at a time (a second caller hears busy);
+DTLS-SRTP is required and Opus is the only codec. The server must offer STUN/TURN through
+XEP-0215 (Prosody `mod_turn_external`, or `mod_external_services`). If the dependencies are not
+installed the plugin logs a warning and chat keeps working.
+
+Notes: a mute in the caller's client ends the current utterance immediately. A reply is spoken
+instead of being sent as text; progress messages still arrive in the chat. Speaker echo can
+trigger the barge-in; use headphones or a client with echo cancellation.
+
 ### Ad-hoc commands (XEP-0050)
 
 The adapter registers ad-hoc commands on the bot's JID. Users can discover them

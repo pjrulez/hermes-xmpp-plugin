@@ -1,0 +1,5 @@
+# Optional: live audio calls (xmpp.calls.enabled). Installed into the Hermes environment with:
+#   uv pip install -r requirements-calls.txt
+aiortc>=1.16,<2
+av>=19
+numpy>=2
