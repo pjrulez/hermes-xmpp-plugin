@@ -313,6 +313,16 @@ class CallController:
         """
         if not self.host.authorized(peer):
             return f"refused: {peer} is not allowed to be called"
+        for sid, call in self.calls.items():
+            if call.peer.split("/", 1)[0] == peer:
+                # They are on a call with us right now: say it there, do not ring them again.
+                call.convo.remember(opening, context)
+                task = asyncio.create_task(
+                    self._deliver(sid, call.convo, opening, uninterruptible, hang_up_after)
+                )
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
+                return "connected: the person is already on a call with you; it is being said there"
         deadline = asyncio.get_running_loop().time() + self.config.busy_wait
         # A result can arrive just as the previous call ends: queue behind it instead of failing.
         while self._busy() and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110

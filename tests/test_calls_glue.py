@@ -540,3 +540,22 @@ def test_xmpp_message_tool_sends_only_to_known_addresses(monkeypatch):
     assert ok == {"success": True, "status": "sent"}
     assert sent == [("agent@example.org", "do it", "xmpp-message-tool")]
     assert bad["success"] is False and "agent@example.org" in bad["status"]
+
+
+def test_a_silence_warning_is_never_spoken_the_agent_is_asked_again():
+    a = make_adapter(calls={"enabled": True})
+    a._build_calls(MagicMock())
+    host = a._calls_host
+    answers = iter(["⚠️ The model returned only a silence marker for a message.", "Goodbye. [[hangup]]"])
+    seen = []
+
+    async def once(peer, call_id, text):
+        seen.append(text)
+        return next(answers)
+
+    host._ask_once = once
+    assert asyncio.run(host.ask("user@example.org", "sid", "goodbye")) == "Goodbye. [[hangup]]"
+    assert seen[1].endswith("goodbye") and seen[1].startswith("[Your last reply was empty")
+
+    host._ask_once = lambda p, c, t: asyncio.sleep(0, "⚠️ The model returned only a silence marker.")
+    assert asyncio.run(host.ask("user@example.org", "sid", "hi")) == ""  # still silent: say nothing

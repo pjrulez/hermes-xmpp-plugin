@@ -18,8 +18,11 @@ from .speech import HANGUP
 CALL_PROMPT = (
     "This message is spoken on a live phone call and your reply is read aloud. Answer in one to "
     "three short sentences of plain words: no markdown, lists, links or code, and no closing "
-    f"notes about what you skipped or checked. If the caller says goodbye, end with {HANGUP}."
+    f"notes about what you skipped or checked. If the caller says goodbye, end with {HANGUP}. "
+    "Always answer out loud: on a call never reply with [SILENT] or an empty message."
 )
+NO_REPLY = "returned only a silence marker"  # the gateway's text for a bare [SILENT]
+NUDGE = "[Your last reply was empty. Answer the caller out loud in one short sentence.] "
 TURN_TIMEOUT = 180.0
 
 
@@ -105,6 +108,14 @@ class HermesCallHost:
         return {j.lower() for j in self.adapter.allowed_users} - set(peers)
 
     async def ask(self, peer: str, call_id: str, text: str) -> str:
+        reply = await self._ask_once(peer, call_id, text)
+        if NO_REPLY in reply or not reply.strip():  # never speak the gateway's warning
+            reply = await self._ask_once(peer, call_id, NUDGE + text)
+            if NO_REPLY in reply:
+                return ""
+        return reply
+
+    async def _ask_once(self, peer: str, call_id: str, text: str) -> str:
         from gateway.platforms.base import (  # type: ignore[import-not-found]
             MessageEvent,
             MessageType,

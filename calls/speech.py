@@ -23,7 +23,12 @@ def is_phantom(text: str, seconds: float) -> bool:
     letters = re.sub(r"[^a-z ]", "", text.lower()).strip()
     if not any(c.isalnum() for c in text) or re.fullmatch(r"[\[(].*[\])]", text.strip()):
         return True  # "♪♪♪", "[music]", "(silence)": sound effects, not words
-    return seconds < PHANTOM_MAX_S and letters in _PHANTOMS
+    if letters in _PHANTOMS:
+        return seconds < PHANTOM_MAX_S
+    # "Thank you. Thank you. Thank you.": the same stock phrase over and over, at any length
+    parts = [re.sub(r"[^a-z ]", "", p).strip() for p in re.split(r"[.!?]+", text.lower())]
+    parts = [p for p in parts if p]
+    return len(parts) >= 2 and all(p in _PHANTOMS for p in parts)
 
 
 def clean(text: str) -> str:
