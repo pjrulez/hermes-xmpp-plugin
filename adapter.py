@@ -408,7 +408,7 @@ def _find_omemo_plugin(client: Any) -> Any:
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
 # Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
 # sends as chat; answering them would keep two agents talking forever.
-_STATUS_MARKS = ("⚡", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄")
+_STATUS_MARKS = ("⚡", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄", "⚠", "✏", "ℹ")
 _AGENT_PROMPT = (
     "This message comes from another automated agent, not from a person. Do not chat, thank or "
     "acknowledge it. If it asks for work, do it; if it needs no action, your whole reply must be "
@@ -1755,6 +1755,16 @@ class XmppAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if self.client is None or not getattr(self, "_running", True):
             return SendResult(success=False, error="xmpp not connected", retryable=True)
+
+        # Gateway status lines ("⚠️ The model returned only a silence marker...") never go to a
+        # partner agent: it would answer them and the two would talk forever.
+        if (
+            content
+            and self._bare(chat_id).lower() in self._agent_peers
+            and content.lstrip().startswith(_STATUS_MARKS)
+        ):
+            logger.info("xmpp: not sending a status line to agent peer %s", chat_id)
+            return SendResult(success=True)
 
         # A reply to a spoken call turn is read aloud by the call, not sent as text.
         if (

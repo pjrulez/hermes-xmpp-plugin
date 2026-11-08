@@ -456,3 +456,11 @@ def test_status_lines_from_a_partner_agent_are_not_answered():
     assert "⚡ Interrupting current task".startswith(adapter._STATUS_MARKS)
     assert not "CALL REQUEST for x".startswith(adapter._STATUS_MARKS)
     assert "[SILENT]" in adapter._AGENT_PROMPT
+
+
+def test_status_lines_are_not_sent_to_a_partner_agent():
+    a = make_adapter(agent_peers=["agent@example.org"])
+    a.client = MagicMock()
+    result = asyncio.run(a.send("agent@example.org", "⚠️ The model returned only a silence marker"))
+    assert result.success
+    a.client.make_message.assert_not_called()

@@ -20,7 +20,7 @@ from .audio import (
     ack_tone,
     warn_tone,
 )
-from .speech import sentences, split_hangup
+from .speech import is_phantom, sentences, split_hangup
 
 OOPS = "Sorry, something went wrong. Please say that again."
 FILLER = "One moment."
@@ -240,8 +240,8 @@ class Conversation:
             except Exception:
                 logging.exception("transcription failed")
                 return
-            if not text:
-                logging.info("heard no words in a %.1fs utterance", len(pcm) / STT_RATE)
+            if not text or is_phantom(text, len(pcm) / STT_RATE):
+                logging.info("heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text)
                 return
             logging.info("caller: %s", text)
             if self._task is None or self._task.done():
@@ -270,8 +270,10 @@ class Conversation:
             if said is None:
                 assert pcm is not None
                 text = await retry(lambda: self.speech.transcribe(pcm))
-                if not text:
-                    logging.info("heard no words in a %.1fs utterance", len(pcm) / STT_RATE)
+                if not text or is_phantom(text, len(pcm) / STT_RATE):
+                    logging.info(
+                        "heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text
+                    )
                     self._turn_pcm = None
                     return
                 logging.info("caller: %s", text)

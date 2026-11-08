@@ -13,6 +13,16 @@ FIRST_MAX = 70  # longer first chunks are split at a clause so speech starts soo
 MIN_SENTENCE = 25  # shorter pieces are merged forward: each TTS call costs ~1 s
 
 
+# What Whisper-style models "hear" in room noise or silence.
+_PHANTOMS = {"thank you", "thanks", "thank you for watching", "thanks for watching", "you", "bye"}
+PHANTOM_MAX_S = 3.0
+
+
+def is_phantom(text: str, seconds: float) -> bool:
+    """A short utterance whose transcript is a stock phrase: noise, not the caller."""
+    return seconds < PHANTOM_MAX_S and re.sub(r"[^a-z ]", "", text.lower()).strip() in _PHANTOMS
+
+
 def clean(text: str) -> str:
     """Documented rule: code blocks become "code omitted", links keep their label, bare URLs
     become "a link", markdown marks and list bullets are dropped."""
