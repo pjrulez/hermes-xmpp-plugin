@@ -853,6 +853,11 @@ class XmppAdapter(BasePlatformAdapter):
         try:
             from importlib import import_module
 
+            # Optional `vendor/` next to this file holds the call dependencies (aiortc, av, ...)
+            # so the Hermes environment stays untouched. Appended: Hermes' own packages win.
+            vendor = str(Path(__file__).resolve().parent / "vendor")
+            if os.path.isdir(vendor) and vendor not in sys.path:
+                sys.path.append(vendor)
             base = f"{__package__}.calls" if __package__ else "calls"
             controller = import_module(f"{base}.controller")
             host_module = import_module(f"{base}.hermes_host")

@@ -290,7 +290,9 @@ configured `tts` provider. This is turn-based speech, not full duplex: expect a 
 delay per turn, mostly the agent's own thinking time.
 
 **Enable it** (off by default). Install the extras into the Hermes environment
-(`uv pip install -r requirements-calls.txt`), then add to `config.yaml`:
+(`uv pip install -r requirements-calls.txt`), or, to leave that environment untouched, into a
+`vendor/` folder next to `adapter.py` (`uv pip install --python <hermes python> --target vendor -r
+requirements-calls.txt`; the plugin adds it to the import path). Then add to `config.yaml`:
 
 ```yaml
 xmpp:
