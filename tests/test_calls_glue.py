@@ -577,3 +577,53 @@ def test_a_stt_command_that_hears_nothing_is_an_empty_transcript(monkeypatch):
     mod.transcribe_audio = lambda *a, **k: {"success": False, "error": "service down"}
     with pytest.raises(RuntimeError):
         asyncio.run(a._calls_host.speech.transcribe(np.zeros(1600, np.int16)))
+
+
+# ------------------------------------------------------------ OMEMO key safety
+
+omemo = pytest.mark.skipif(not adapter.SLIXMPP_OMEMO_AVAILABLE, reason="slixmpp-omemo not installed")
+
+
+@omemo
+def test_omemo_store_is_atomic_and_private(tmp_path):
+    path = tmp_path / "omemo.json"
+    store = adapter._StorageImpl(path)
+    asyncio.run(store._store("/ikp/key", "secret"))
+    assert json.loads(path.read_text()) == {"/ikp/key": "secret"}
+    assert (path.stat().st_mode & 0o777) == 0o600
+    assert not list(tmp_path.glob("*.tmp"))  # the temp file was renamed over the store
+
+
+@omemo
+def test_omemo_store_that_cannot_be_read_is_never_overwritten(tmp_path):
+    path = tmp_path / "omemo.json"
+    path.write_text('{"/ikp/key": "secret"')  # cut off mid-write
+    with pytest.raises(adapter.OmemoStoreError):
+        adapter._StorageImpl(path)
+    assert path.read_text() == '{"/ikp/key": "secret"'  # untouched: nothing was reset
+
+
+@omemo
+def test_omemo_store_is_refused_to_a_second_process(tmp_path):
+    import fcntl
+    import os
+
+    path = tmp_path / "omemo.json"
+    other = os.open(f"{os.path.realpath(path)}.lock", os.O_CREAT | os.O_RDWR)
+    fcntl.flock(other, fcntl.LOCK_EX)  # another process holds the store
+    try:
+        with pytest.raises(adapter.OmemoStoreError):
+            adapter._StorageImpl(path)
+    finally:
+        os.close(other)
+    adapter._StorageImpl(path)  # free again
+    adapter._StorageImpl(path)  # the same process may reopen it (reconnects)
+
+
+@omemo
+def test_world_readable_key_file_is_locked_down(tmp_path):
+    path = tmp_path / "omemo.json"
+    path.write_text("{}")
+    path.chmod(0o644)
+    adapter._StorageImpl(path)
+    assert (path.stat().st_mode & 0o777) == 0o600

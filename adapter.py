@@ -131,19 +131,55 @@ def check_xmpp_requirements() -> bool:
 # OMEMO storage (JSON file backed)
 # ----------------------------------------------------------------
 
+class OmemoStoreError(RuntimeError):
+    """The OMEMO key file cannot be used safely; OMEMO stays off rather than risk the keys."""
+
+
+# Store files this process already holds the lock for (a reconnect rebuilds the adapter).
+_OMEMO_LOCKS: Dict[str, int] = {}
+
+
+def _lock_omemo_store(path: Path) -> None:
+    """One process per OMEMO store. Two processes would each keep their own copy of the double
+    ratchets and overwrite the other's file, which breaks every session and needs a manual
+    clean-up. The lock is held until the process exits."""
+    key = os.path.realpath(path)
+    if key in _OMEMO_LOCKS:
+        return
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(f"{key}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(fd)
+        raise OmemoStoreError(f"{path} is in use by another process") from exc
+    _OMEMO_LOCKS[key] = fd
+
+
 if SLIXMPP_OMEMO_AVAILABLE:
     class _StorageImpl(Storage):  # type: ignore[misc]
-        """Simple JSON-file backed OMEMO storage."""
+        """JSON-file backed OMEMO storage: single-process, atomic, owner-only."""
 
         def __init__(self, json_file_path: Path) -> None:
             super().__init__()  # type: ignore[misc]
             self._path = json_file_path
             self._data: Dict[str, Any] = {}
-            try:
-                with open(self._path, encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except Exception:
-                pass
+            _lock_omemo_store(self._path)
+            if self._path.exists() and self._path.stat().st_size:
+                try:
+                    with open(self._path, encoding="utf-8") as f:
+                        self._data = json.load(f)
+                    if not isinstance(self._data, dict):
+                        raise ValueError("not a JSON object")
+                except Exception as exc:
+                    # Starting empty would overwrite the identity key on the next write.
+                    raise OmemoStoreError(
+                        f"{self._path} is unreadable ({exc}); not using OMEMO. "
+                        "Restore a backup or move the file away to start fresh."
+                    ) from exc
+                self._path.chmod(0o600)  # private keys
 
         async def _load(self, key: str) -> Any:  # type: ignore[override]
             if key in self._data:
@@ -159,9 +195,15 @@ if SLIXMPP_OMEMO_AVAILABLE:
             self._save()
 
         def _save(self) -> None:
+            """Write a temp file, then rename it over the store: a crash leaves the old file."""
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._path, "w", encoding="utf-8") as f:
+            tmp = self._path.with_name(self._path.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._path)
 
     class _XEP_0384Impl(XEP_0384):  # type: ignore[misc,valid-type]
         """Concrete OMEMO plugin with BTBV and JSON-file storage."""
