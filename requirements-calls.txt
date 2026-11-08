@@ -3,3 +3,4 @@
 aiortc>=1.16,<2
 av>=19
 numpy>=2
+webrtcvad-wheels>=2.0.14  # speech/noise detection; needs a C compiler where no wheel exists

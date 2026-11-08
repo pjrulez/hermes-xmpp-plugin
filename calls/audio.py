@@ -5,6 +5,7 @@ import fractions
 import io
 import time
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import av
@@ -28,33 +29,59 @@ class Utterance:
     pcm: np.ndarray  # int16 mono at STT_RATE
 
 
-class Endpointer:
-    """Energy-based endpointing over 16 kHz mono int16.
+def webrtc_vad(level: int = 2) -> Callable[[np.ndarray], bool]:
+    """Frame classifier from the WebRTC VAD, after a high-pass pre-emphasis.
 
-    shortcut: energy threshold with an adaptive noise floor, not a trained VAD. Upgrade to
-    Silero/WebRTC VAD if a noisy line causes false starts or cut-offs.
+    Steady hum, fan rumble and hiss are rejected, speech and slow room noise changes are not
+    confused for each other (measured: RESEARCH/evidence/endpointing.txt). Another voice in the
+    background still counts as speech; no frame classifier can tell them apart.
+    """
+    import webrtcvad
+
+    vad = webrtcvad.Vad(level)
+
+    def is_speech(frame: np.ndarray) -> bool:
+        x = frame.astype(np.float64)
+        emphasized = np.concatenate(([x[0]], x[1:] - 0.97 * x[:-1]))
+        return vad.is_speech(
+            np.clip(emphasized, -32768, 32767).astype(np.int16).tobytes(), STT_RATE
+        )
+
+    return is_speech
+
+
+class Endpointer:
+    """Cuts 16 kHz mono int16 audio into utterances.
+
+    An utterance opens on the first speech frame and closes after `silence_ms` without speech
+    (or at `max_ms`). Shorter than `min_ms` of speech is a click and is dropped. `SpeechHeld`
+    fires once speech has lasted `hold_ms`, which is what barge-in listens for.
     """
 
     def __init__(
         self,
         *,
-        silence_ms: int = 700,
+        silence_ms: int = 800,
         min_ms: int = 300,
         max_ms: int = 20000,
         hold_ms: int = 300,
         preroll_ms: int = 200,
-        min_rms: float = 250.0,
+        is_speech: Callable[[np.ndarray], bool] | None = None,
     ) -> None:
-        self.silence_ms, self.min_ms, self.max_ms = silence_ms, min_ms, max_ms
-        self.hold_ms, self.min_rms = hold_ms, min_rms
+        self.silence_ms, self.min_ms, self.max_ms, self.hold_ms = (
+            silence_ms,
+            min_ms,
+            max_ms,
+            hold_ms,
+        )
+        self._is_speech = is_speech or webrtc_vad()
         self._preroll = preroll_ms // FRAME_MS
         self._pending = np.zeros(0, np.int16)
-        self._idle: list[np.ndarray] = []  # recent quiet frames kept as preroll
+        self._idle: list[np.ndarray] = []  # recent non-speech frames kept as preroll
         self._frames: list[np.ndarray] = []
         self._open = False
         self._voiced = self._silence = 0
         self._held = False
-        self._floor = 0.0
 
     def feed(self, pcm: np.ndarray) -> list[SpeechHeld | Utterance]:
         self._pending = np.concatenate([self._pending, pcm.astype(np.int16)])
@@ -73,20 +100,17 @@ class Endpointer:
         return events
 
     def _frame(self, frame: np.ndarray) -> list[SpeechHeld | Utterance]:
-        rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-        loud = rms > max(self.min_rms, 3 * self._floor)
-        if not loud:
-            self._floor = 0.95 * self._floor + 0.05 * rms
+        voiced = self._is_speech(frame)
         events: list[SpeechHeld | Utterance] = []
         if not self._open:
-            if not loud:
+            if not voiced:
                 self._idle = [*self._idle, frame][-self._preroll :]
                 return events
             self._open, self._frames = True, [*self._idle, frame]
             self._idle, self._voiced, self._silence, self._held = [], FRAME_MS, 0, False
         else:
             self._frames.append(frame)
-            if loud:
+            if voiced:
                 self._voiced, self._silence = self._voiced + FRAME_MS, 0
             else:
                 self._silence += FRAME_MS
@@ -109,6 +133,12 @@ class Downsampler:
     def feed(self, frame: av.AudioFrame) -> np.ndarray:
         chunks = [f.to_ndarray().reshape(-1) for f in self._resampler.resample(frame)]
         return np.concatenate(chunks) if chunks else np.zeros(0, np.int16)
+
+
+def ack_tone() -> np.ndarray:
+    """A short soft beep (OUT_RATE, int16) played when an utterance is cut: "I heard you"."""
+    t = np.arange(int(OUT_RATE * 0.08)) / OUT_RATE
+    return (np.sin(2 * np.pi * 880 * t) * np.hanning(len(t)) * 3500).astype(np.int16)
 
 
 def wav_bytes(pcm: np.ndarray, rate: int = STT_RATE) -> bytes:

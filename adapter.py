@@ -863,6 +863,9 @@ class XmppAdapter(BasePlatformAdapter):
                 greeting=self._calls_cfg["greeting"],
                 filler_after=self._calls_cfg["filler_after"],
                 ring_timeout=self._calls_cfg["ring_timeout"],
+                silence_ms=self._calls_cfg["silence_ms"],
+                vad_level=self._calls_cfg["vad_level"],
+                ack_tone=self._calls_cfg["ack_tone"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -2877,6 +2880,9 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "greeting": str(raw.get("greeting", _CALL_GREETING)),
         "filler_after": number("filler_after", 3.0, float),
         "ring_timeout": number("ring_timeout", 45, int),
+        "silence_ms": number("silence_ms", 800, int),
+        "vad_level": min(3, max(0, number("vad_level", 2, int))),
+        "ack_tone": _truthy(raw.get("ack_tone", True)),
     }
 
 

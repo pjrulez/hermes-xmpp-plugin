@@ -115,6 +115,9 @@ class HermesCallHost:
             if self._pending.get(peer) is turn:
                 del self._pending[peer]
 
+    async def post_text(self, peer: str, text: str) -> None:
+        await self.adapter.send(chat_id=peer, content=text)  # no turn is pending: not captured
+
     def capture(self, chat_id: str, content: str, reply_to: str | None) -> bool:
         """Called from the adapter's send(). True means the text was taken for speech."""
         turn = self._pending.get(chat_id)

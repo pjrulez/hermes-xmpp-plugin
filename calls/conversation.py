@@ -10,7 +10,15 @@ from typing import Protocol
 import numpy as np
 from aiortc.mediastreams import MediaStreamError, MediaStreamTrack
 
-from .audio import STT_RATE, Downsampler, Endpointer, PlaybackTrack, SpeechHeld, Utterance
+from .audio import (
+    STT_RATE,
+    Downsampler,
+    Endpointer,
+    PlaybackTrack,
+    SpeechHeld,
+    Utterance,
+    ack_tone,
+)
 from .speech import sentences, split_hangup
 
 OOPS = "Sorry, something went wrong. Please say that again."
@@ -45,12 +53,18 @@ class Conversation:
         respond: Callable[[str], Awaitable[str]],
         on_hangup: Callable[[], Awaitable[None]],
         filler_after: float = 3.0,
+        endpointer: Endpointer | None = None,
+        ack_tone_enabled: bool = True,
+        fallback_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.speech, self.respond, self.on_hangup = speech, respond, on_hangup
+        self.fallback_text = fallback_text  # gets the reply as text when speaking it fails
+        self._ack = ack_tone() if ack_tone_enabled else None
         self.filler_after = filler_after  # seconds of waiting for the agent before "One moment."
         self._filler_audio: np.ndarray | None = None
         self._cache: dict[str, np.ndarray] = {}  # sentence -> audio synthesized ahead of time
-        self._endpointer = Endpointer()
+        self._endpointer = endpointer or Endpointer()
+        self._turn_pcm: np.ndarray | None = None  # caller audio of a turn with no reply yet
         self.playback = PlaybackTrack()
         self._task: asyncio.Task[None] | None = None  # the running turn
         self._listener: asyncio.Task[None] | None = None
@@ -101,11 +115,11 @@ class Conversation:
                     if isinstance(event, SpeechHeld):
                         self._barge_in()
                     elif isinstance(event, Utterance):
-                        logging.info(
-                            "utterance %.1fs rms=%d",
-                            len(event.pcm) / STT_RATE,
-                            np.sqrt(np.mean(event.pcm.astype(float) ** 2)),
-                        )
+                        logging.info("utterance %.1fs", len(event.pcm) / STT_RATE)
+                        if (
+                            self._ack is not None
+                        ):  # "I heard you finish": tells the caller silence was detected
+                            self.playback.play(self._ack)
                         self._start_turn(event.pcm)
         except MediaStreamError:
             return
@@ -126,6 +140,11 @@ class Conversation:
             self._task.cancel()
 
     def _start_turn(self, pcm: np.ndarray) -> None:
+        """Run a turn for `pcm`. If the previous utterance got no reply yet (the caller only
+        paused mid-thought), it is replaced by both utterances joined, not forgotten."""
+        if self._turn_pcm is not None:
+            pcm = np.concatenate([self._turn_pcm, np.zeros(STT_RATE // 3, np.int16), pcm])
+        self._turn_pcm = pcm
         if self._task and not self._task.done():
             self._task.cancel()
         self._task = asyncio.create_task(self._run_turn(pcm))
@@ -135,14 +154,22 @@ class Conversation:
             t0 = time.monotonic()
             text = await self.speech.transcribe(pcm)
             if not text:
+                self._turn_pcm = None
                 return
             t1 = time.monotonic()
             logging.info("caller: %s", text)
             reply, hangup = split_hangup(await self._answer(self._note + text))
             self._note = ""
+            self._turn_pcm = None  # answered: what the caller says next is a new turn
             t2 = time.monotonic()
             logging.info("agent: %s", reply)
-            await self._speak(Turn(sentences(reply), self.playback.played))
+            try:
+                await self._speak(Turn(sentences(reply), self.playback.played))
+            except Exception:
+                logging.exception("speaking the reply failed")
+                if self.fallback_text is not None:
+                    await self.fallback_text(reply)
+                return
             logging.info(
                 "timing stt=%.1fs agent=%.1fs first-audio=%.1fs",
                 t1 - t0,
@@ -156,6 +183,7 @@ class Conversation:
             raise
         except Exception:
             logging.exception("turn failed")
+            self._turn_pcm = None
             await self._apologize()
 
     async def _answer(self, text: str) -> str:

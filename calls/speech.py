@@ -8,6 +8,8 @@ _LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _URL = re.compile(r"https?://\S+")
 _MARKUP = re.compile(r"[*_#>`]+|^\s*[-+]\s+|^\s*\d+\.\s+", re.MULTILINE)
 _SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_CLAUSE = re.compile(r"[,;:]\s")
+FIRST_MAX = 70  # longer first chunks are split at a clause so speech starts sooner
 MIN_SENTENCE = 25  # shorter pieces are merged forward: each TTS call costs ~1 s
 
 
@@ -37,4 +39,13 @@ def sentences(text: str) -> list[str]:
         merged[-1] = f"{merged[-1]} {carry}"
     elif carry:
         merged.append(carry)
-    return merged
+    return _quick_start(merged)
+
+
+def _quick_start(parts: list[str]) -> list[str]:
+    """Split a long first chunk at its first comma: TTS time grows with text length."""
+    if parts and len(parts[0]) > FIRST_MAX:
+        cut = _CLAUSE.search(parts[0], MIN_SENTENCE)
+        if cut:
+            return [parts[0][: cut.end()].strip(), parts[0][cut.end() :].strip(), *parts[1:]]
+    return parts

@@ -300,12 +300,26 @@ xmpp:
     greeting: "Hi, I'm here. What can I do for you?"   # "" for none
     filler_after: 3.0      # say "One moment." if the agent takes longer than this
     ring_timeout: 45       # outgoing calls: give up after this many seconds
+    silence_ms: 800        # this much non-speech ends your turn (raise if it cuts you off)
+    vad_level: 2           # 0-3; higher ignores more background noise but may miss soft speech
+    ack_tone: true         # short beep when your turn was captured ("it heard me")
 ```
+
+**How it knows you finished.** Speech is told from noise by the WebRTC voice detector (steady
+hum, fan and hiss are ignored; another person talking in the background is not). After
+`silence_ms` without speech the turn is cut, a short beep confirms it, and the agent answers; if
+it needs more than `filler_after` seconds it says "One moment." If you only paused to think, the
+two parts are joined into one turn. Muting your microphone ends the turn at once.
 
 **The agent can call you.** With calls enabled the plugin registers the `xmpp_call` tool (toolset
 `xmpp_calls`; add it to the toolsets your gateway or cron jobs use). The agent supplies an
 opening line, the call rings your devices, the opening is spoken the moment you pick up, and the
 conversation continues as above. Only allowed users can be called; one call at a time.
+
+**Prosody checklist.** `mod_turn_external` (or `mod_external_services`) with a reachable
+coturn so clients and the bot get STUN/TURN credentials (XEP-0215); TLS on c2s; clients that
+advertise Jingle RTP, ICE-UDP and DTLS (Conversations, Dino and Monal do); nothing else is needed
+on the server. The bot publishes its call features in its caps, so run it as a normal account.
 
 Rules: only JIDs in `allowed_users` can call; one call at a time (a second caller hears busy);
 DTLS-SRTP is required and Opus is the only codec. The server must offer STUN/TURN through

@@ -10,6 +10,7 @@ from typing import Any, Protocol
 from xml.etree import ElementTree as ET
 
 from . import turn
+from .audio import Endpointer, webrtc_vad
 from .conversation import Conversation, Speech
 from .jingle import wire
 from .jingle.model import JINGLE, RTP, Jingle, JingleError
@@ -41,6 +42,10 @@ class Host(Protocol):
         """One agent turn for `text` said by `peer` (bare JID) on call `call_id`."""
         ...
 
+    async def post_text(self, peer: str, text: str) -> None:
+        """Send `text` to the peer's chat (a reply that could not be spoken)."""
+        ...
+
 
 @dataclass(frozen=True)
 class CallConfig:
@@ -49,6 +54,11 @@ class CallConfig:
     filler_after: float = 3.0
     max_calls: int = 1
     ring_timeout: int = 45  # outgoing calls: seconds to wait for an answer
+    silence_ms: int = 800  # this much non-speech ends the caller's turn
+    vad_level: int = (
+        2  # WebRTC VAD aggressiveness 0-3: higher rejects more noise, misses soft speech
+    )
+    ack_tone: bool = True  # short beep when an utterance is captured
 
 
 class Call:
@@ -197,12 +207,7 @@ class CallController:
         session = Session(jingle.sid, we_initiated=False)
         session.apply("session-initiate", sent_by_us=False)
         bare = peer.split("/", 1)[0]
-        convo = Conversation(
-            self.host.speech,
-            lambda text: self.host.ask(bare, jingle.sid, text),
-            lambda: self.end(jingle.sid, "success", notify=True),
-            filler_after=self.config.filler_after,
-        )
+        convo = self._conversation(jingle.sid, bare)
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[jingle.sid] = Call(peer, session, media, convo)
         content = await media.answer(jingle)
@@ -213,6 +218,20 @@ class CallController:
             asyncio.create_task(self._limit(jingle.sid)),
             asyncio.create_task(self._greet(call)),
         ]
+
+    def _conversation(self, sid: str, bare: str) -> Conversation:
+        config = self.config
+        return Conversation(
+            self.host.speech,
+            lambda text: self.host.ask(bare, sid, text),
+            lambda: self.end(sid, "success", notify=True),
+            filler_after=config.filler_after,
+            endpointer=Endpointer(
+                silence_ms=config.silence_ms, is_speech=webrtc_vad(config.vad_level)
+            ),
+            ack_tone_enabled=config.ack_tone,
+            fallback_text=lambda text: self.host.post_text(bare, text),
+        )
 
     # ---- outgoing calls ------------------------------------------------------------------
 
@@ -247,12 +266,7 @@ class CallController:
 
     async def _offer(self, full: str, sid: str, opening: str) -> str:
         session = Session(sid, we_initiated=True)
-        convo = Conversation(
-            self.host.speech,
-            lambda text: self.host.ask(full.split("/", 1)[0], sid, text),
-            lambda: self.end(sid, "success", notify=True),
-            filler_after=self.config.filler_after,
-        )
+        convo = self._conversation(sid, full.split("/", 1)[0])
         convo.remember(opening)
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[sid] = Call(full, session, media, convo)

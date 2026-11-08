@@ -68,7 +68,13 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 45,
+        "silence_ms": 800, "vad_level": 2, "ack_tone": True,
     }
+
+
+def test_vad_level_is_clamped_and_ack_tone_can_be_off():
+    cfg = adapter._calls_settings({"calls": {"vad_level": 9, "ack_tone": False, "silence_ms": 1200}})
+    assert (cfg["vad_level"], cfg["ack_tone"], cfg["silence_ms"]) == (3, False, 1200)
 
 
 def test_bad_numbers_fall_back():
