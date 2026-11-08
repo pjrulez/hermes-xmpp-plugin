@@ -449,3 +449,10 @@ def test_acknowledgements_of_title_and_steer_stay_out_of_the_chat():
     host._silent.add("call-title-abc")
     assert host.capture("user@example.org", "Session title set", "call-title-abc") is True
     assert host.capture("user@example.org", "Session title set", "other-id") is False  # normal chat
+
+
+def test_status_lines_from_a_partner_agent_are_not_answered():
+    assert "⚙️ tool_search".startswith(adapter._STATUS_MARKS)
+    assert "⚡ Interrupting current task".startswith(adapter._STATUS_MARKS)
+    assert not "CALL REQUEST for x".startswith(adapter._STATUS_MARKS)
+    assert "[SILENT]" in adapter._AGENT_PROMPT

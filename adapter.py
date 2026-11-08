@@ -406,6 +406,14 @@ def _find_omemo_plugin(client: Any) -> Any:
 # ----------------------------------------------------------------
 
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
+# Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
+# sends as chat; answering them would keep two agents talking forever.
+_STATUS_MARKS = ("⚡", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄")
+_AGENT_PROMPT = (
+    "This message comes from another automated agent, not from a person. Do not chat, thank or "
+    "acknowledge it. If it asks for work, do it; if it needs no action, your whole reply must be "
+    "exactly [SILENT]."
+)
 
 
 class XmppAdapter(BasePlatformAdapter):
@@ -1417,7 +1425,10 @@ class XmppAdapter(BasePlatformAdapter):
                 user_name, user_id = None, from_bare
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
                 return
-            if user_id.lower() in self._agent_peers and not self._agent_peer_may_speak(user_id.lower()):
+            if user_id.lower() in self._agent_peers and (
+                (stanza["body"] or "").lstrip().startswith(_STATUS_MARKS)
+                or not self._agent_peer_may_speak(user_id.lower())
+            ):
                 return
             if chat_type == "dm":
                 self._known_dms.add(from_bare)
@@ -1573,6 +1584,8 @@ class XmppAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_message_id,
                 reply_to_text=reply_to_text,
             )
+            if user_id.lower() in self._agent_peers:
+                event.channel_prompt = _AGENT_PROMPT
             await self.handle_message(event)
         except Exception:
             logger.exception("xmpp: error handling inbound stanza")
