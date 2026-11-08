@@ -263,7 +263,8 @@ def test_tool_needs_a_target_when_several_users_are_allowed(monkeypatch):
 def test_register_adds_the_tool_and_survives_old_hermes():
     ctx = MagicMock()
     adapter.register(ctx)
-    assert ctx.register_tool.call_args.kwargs["name"] == "xmpp_call"
+    names = [c.kwargs["name"] for c in ctx.register_tool.call_args_list]
+    assert names == ["xmpp_call", "xmpp_message"]
     assert ctx.register_platform.called
 
     old = MagicMock()
@@ -516,3 +517,26 @@ def test_call_request_topic_and_context_reach_the_tool_without_the_model(monkeyp
         loop.call_soon_threadsafe(loop.stop)
     assert seen[0]["topic"] == "daily-note"
     assert "EDIT PLAYBOOK" in seen[0]["context"]
+
+
+def test_xmpp_message_tool_sends_only_to_known_addresses(monkeypatch):
+    a = make_adapter(allowed_users="user@example.org", agent_peers=["agent@example.org"],
+                     calls={"enabled": True})
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, **kw):
+        sent.append((chat_id, content, reply_to))
+        return types.SimpleNamespace(success=True, error=None)
+
+    a.send, a._calls_loop = send, loop
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    try:
+        ok = json.loads(adapter._xmpp_message_tool({"to": "Agent@Example.org", "text": "do it"}))
+        bad = json.loads(adapter._xmpp_message_tool({"to": "evil@example.org", "text": "hi"}))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert ok == {"success": True, "status": "sent"}
+    assert sent == [("agent@example.org", "do it", "xmpp-message-tool")]
+    assert bad["success"] is False and "agent@example.org" in bad["status"]

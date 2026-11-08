@@ -2975,6 +2975,52 @@ _CALL_TOOL_SCHEMA = {
 }
 
 
+_MESSAGE_TOOL_SCHEMA = {
+    "name": "xmpp_message",
+    "description": (
+        "Send a text message over XMPP to the person or to a partner agent, for example to hand "
+        "the other agent a task. Hermes has no general send_message tool. The recipient must be "
+        "an allowed user or a partner agent. Returns whether it was sent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Bare JID of the recipient."},
+            "text": {"type": "string", "description": "The message. Plain text."},
+        },
+        "required": ["to", "text"],
+    },
+}
+
+
+def _xmpp_message_tool(args: dict, **_kw: Any) -> str:
+    """Agent tool: send a chat message through the live adapter (never a second process)."""
+
+    def result(success: bool, message: str) -> str:
+        return json.dumps({"success": success, "status": message})
+
+    adapter_ = _live_adapter()
+    if adapter_ is None or adapter_._calls_loop is None:
+        return result(False, "XMPP is not connected")
+    to = adapter_._bare(str((args or {}).get("to") or "")).lower()
+    text = str((args or {}).get("text") or "").strip()
+    known = {j.lower() for j in adapter_.allowed_users} | set(adapter_._agent_peers)
+    if not text:
+        return result(False, "text is required")
+    if to not in known:
+        return result(False, f"cannot message {to or '(nobody)'}; allowed: " + ", ".join(sorted(known)))
+    # A reply_to keeps this out of the spoken reply of a call turn (see the call host's capture()).
+    future = asyncio.run_coroutine_threadsafe(
+        adapter_.send(chat_id=to, content=text, reply_to="xmpp-message-tool"), adapter_._calls_loop
+    )
+    try:
+        sent = future.result(timeout=60)
+    except Exception as exc:
+        future.cancel()
+        return result(False, f"sending failed: {exc}")
+    return result(bool(sent.success), "sent" if sent.success else str(sent.error or "not sent"))
+
+
 def _calls_available() -> bool:
     adapter_ = _live_adapter()
     return adapter_ is not None and adapter_._calls is not None
@@ -3308,8 +3354,13 @@ def register(ctx) -> None:
             handler=_xmpp_call_tool, check_fn=_calls_available,
             description=_CALL_TOOL_SCHEMA["description"], emoji="📞",
         )
+        ctx.register_tool(
+            name="xmpp_message", toolset="xmpp_calls", schema=_MESSAGE_TOOL_SCHEMA,
+            handler=_xmpp_message_tool, check_fn=_calls_available,
+            description=_MESSAGE_TOOL_SCHEMA["description"], emoji="💬",
+        )
     except Exception:  # older Hermes without plugin tools: chat still works
-        logger.debug("xmpp: could not register the xmpp_call tool", exc_info=True)
+        logger.debug("xmpp: could not register the xmpp tools", exc_info=True)
     ctx.register_platform(
         name="xmpp",
         label="XMPP/Jabber",
