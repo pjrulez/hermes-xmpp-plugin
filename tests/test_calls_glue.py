@@ -559,3 +559,21 @@ def test_a_silence_warning_is_never_spoken_the_agent_is_asked_again():
 
     host._ask_once = lambda p, c, t: asyncio.sleep(0, "⚠️ The model returned only a silence marker.")
     assert asyncio.run(host.ask("user@example.org", "sid", "hi")) == ""  # still silent: say nothing
+
+
+def test_a_stt_command_that_hears_nothing_is_an_empty_transcript(monkeypatch):
+    mod = types.ModuleType("tools.transcription_tools")
+    mod.transcribe_audio = lambda *a, **k: {
+        "success": False,
+        "error": "Command STT provider wrote no output file at /x/transcript.txt and produced no stdout",
+    }
+    monkeypatch.setitem(sys.modules, "tools", types.ModuleType("tools"))
+    monkeypatch.setitem(sys.modules, "tools.transcription_tools", mod)
+    a = make_adapter(calls={"enabled": True})
+    a._build_calls(MagicMock())
+    import numpy as np
+
+    assert asyncio.run(a._calls_host.speech.transcribe(np.zeros(1600, np.int16))) == ""
+    mod.transcribe_audio = lambda *a, **k: {"success": False, "error": "service down"}
+    with pytest.raises(RuntimeError):
+        asyncio.run(a._calls_host.speech.transcribe(np.zeros(1600, np.int16)))

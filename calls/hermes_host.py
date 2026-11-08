@@ -36,8 +36,11 @@ class HermesSpeech:
             path = os.path.join(tmp, "caller.wav")
             await asyncio.to_thread(self._write, path, wav_bytes(pcm, STT_RATE))
             result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
+        error = str(result.get("error") or "")
+        if not result.get("success") and "wrote no output file" in error and "no stdout" in error:
+            return ""  # a command provider that hears no words writes nothing: not a failure
         if not result.get("success"):
-            raise RuntimeError(f"STT failed: {result.get('error')}")
+            raise RuntimeError(f"STT failed: {error}")
         return " ".join(str(result.get("transcript", "")).split())
 
     async def synthesize(self, text: str) -> np.ndarray:
