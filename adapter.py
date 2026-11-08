@@ -2562,6 +2562,9 @@ async def send_xmpp_message(
     # Ephemeral resource on the account — must not consult or release the
     # gateway adapter's per-JID scoped lock (compare IRC's "-cron" nick).
     adapter._ephemeral_sender = True
+    # A second process must not touch the gateway's OMEMO store: both would advance the same
+    # double ratchets and the live adapter's sessions break ("Key material decryption failed").
+    adapter._omemo_enabled = False
     if not check_xmpp_requirements():
         return {"success": False, "error": "slixmpp not installed"}
     try:

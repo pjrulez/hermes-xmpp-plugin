@@ -466,3 +466,21 @@ def test_status_lines_are_not_sent_to_a_partner_agent():
     result = asyncio.run(a.send("agent@example.org", "⚠️ The model returned only a silence marker"))
     assert result.success
     a.client.make_message.assert_not_called()
+
+
+def test_one_shot_sender_never_uses_omemo(monkeypatch):
+    """It shares the account (and the OMEMO store file) with the live gateway adapter."""
+    seen = {}
+
+    async def fake_connect(self, *a, **k):
+        seen["omemo"] = self._omemo_enabled
+        self.fatal_error_message = "stop here"
+        return False
+
+    monkeypatch.setattr(adapter.XmppAdapter, "connect", fake_connect)
+    monkeypatch.setattr(adapter.XmppAdapter, "disconnect", lambda self: asyncio.sleep(0))
+    monkeypatch.setattr(adapter, "check_xmpp_requirements", lambda: True)
+    cfg = MagicMock()
+    cfg.extra = {"jid": "hermes@example.org", "password": "x", "omemo": {"enabled": True}}
+    asyncio.run(adapter.send_xmpp_message(cfg, "user@example.org", "hi"))
+    assert seen["omemo"] is False
