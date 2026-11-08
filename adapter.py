@@ -59,6 +59,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -630,6 +631,7 @@ class XmppAdapter(BasePlatformAdapter):
             if j.strip()
         )
         self._agent_peer_times: Dict[str, List[float]] = {}
+        self._call_request: tuple = (-1e9, "", "")  # (when, topic, context) of the last CALL REQUEST
         self._plaintext_peers: frozenset = frozenset(
             self._bare(j.strip()).lower()
             for j in _csv(extra.get("plaintext_peers", _scoped_getenv("XMPP_PLAINTEXT_PEERS", ""))).split(",")
@@ -928,6 +930,17 @@ class XmppAdapter(BasePlatformAdapter):
             )
             self._calls_host = None
             return None
+
+    def _note_call_request(self, body: str) -> None:
+        """A partner agent asked us to phone the operator ("CALL REQUEST ... topic=x"): keep its
+        topic and the text between the first line and "BRIEFING:" (REF, edit playbook), so the
+        `xmpp_call` tool can use them even when the model forgets to pass them."""
+        if not body.lstrip().startswith("CALL REQUEST"):
+            return
+        head, _, rest = body.partition("\n")
+        topic = re.search(r"topic=([\w.:-]+)", head)
+        context = rest.split("BRIEFING:", 1)[0].strip()
+        self._call_request = (time.monotonic(), topic.group(1).rstrip(".") if topic else "", context)
 
     def _agent_peer_may_speak(self, peer: str) -> bool:
         """Loop guard: two agents that answer each other never stop. Accept at most
@@ -1434,6 +1447,8 @@ class XmppAdapter(BasePlatformAdapter):
                 user_name, user_id = None, from_bare
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
                 return
+            if user_id.lower() in self._agent_peers:
+                self._note_call_request(stanza["body"] or "")
             if user_id.lower() in self._agent_peers and (
                 _is_gateway_notice(stanza["body"])
                 or not self._agent_peer_may_speak(user_id.lower())
@@ -2989,13 +3004,16 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             return result(False, "cannot place a call from the XMPP event loop thread")
     except RuntimeError:
         pass  # no loop in this thread: the normal worker-thread case
+    asked_at, request_topic, request_context = adapter_._call_request
+    if time.monotonic() - asked_at > 600:  # only a request that is still fresh
+        request_topic = request_context = ""
     future = asyncio.run_coroutine_threadsafe(adapter_._calls.place_call(
             target,
             opening,
             uninterruptible=_truthy(args.get("uninterruptible")),
             hang_up_after=_truthy(args.get("hang_up_after")),
-            topic=str(args.get("topic") or "")[:60],
-            context=str(args.get("context") or "")[:3000],
+            topic=str(args.get("topic") or request_topic)[:60],
+            context=str(args.get("context") or request_context)[:3000],
         ),
         adapter_._calls_loop,)
     try:

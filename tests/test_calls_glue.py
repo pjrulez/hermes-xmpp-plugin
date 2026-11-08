@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import types
 import wave
 from pathlib import Path
@@ -484,3 +485,34 @@ def test_one_shot_sender_never_uses_omemo(monkeypatch):
     cfg.extra = {"jid": "hermes@example.org", "password": "x", "omemo": {"enabled": True}}
     asyncio.run(adapter.send_xmpp_message(cfg, "user@example.org", "hi"))
     assert seen["omemo"] is False
+
+
+def test_call_request_topic_and_context_reach_the_tool_without_the_model(monkeypatch):
+    a = make_adapter(allowed_users="user@example.org", agent_peers=["agent@example.org"],
+                     calls={"enabled": True})
+    a._note_call_request(
+        "CALL REQUEST for x: topic=daily-note. Phone now.\nREF: slug=a commit=b\n"
+        "EDIT PLAYBOOK: edit it.\nBRIEFING:\nGood morning."
+    )
+    _, topic, context = a._call_request
+    assert topic == "daily-note"
+    assert context == "REF: slug=a commit=b\nEDIT PLAYBOOK: edit it."
+    a._note_call_request("hello there")  # not a request: nothing changes
+    assert a._call_request[1] == "daily-note"
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    seen = []
+
+    async def place_call(peer, opening, **options):
+        seen.append(options)
+        return "connected: up"
+
+    a._calls, a._calls_loop = types.SimpleNamespace(place_call=place_call), loop
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    try:
+        json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert seen[0]["topic"] == "daily-note"
+    assert "EDIT PLAYBOOK" in seen[0]["context"]
