@@ -247,7 +247,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
     assert out == {"success": True, "status": "connected: the call is up"}
     assert seen == [("user@example.org", "Your backup finished.", True,
-                     {"uninterruptible": True, "hang_up_after": False})]
+                     {"uninterruptible": True, "hang_up_after": False, "topic": ""})]
     assert adapter._calls_available() is True
 
 
@@ -452,9 +452,11 @@ def test_acknowledgements_of_title_and_steer_stay_out_of_the_chat():
 
 
 def test_status_lines_from_a_partner_agent_are_not_answered():
-    assert "⚙️ tool_search".startswith(adapter._STATUS_MARKS)
-    assert "⚡ Interrupting current task".startswith(adapter._STATUS_MARKS)
-    assert not "CALL REQUEST for x".startswith(adapter._STATUS_MARKS)
+    assert adapter._is_gateway_notice("⚙️ tool_search")
+    assert adapter._is_gateway_notice("⚡ Interrupting current task (iteration 2).")
+    assert adapter._is_gateway_notice("⚠️ The model returned only a silence marker for a message")
+    assert not adapter._is_gateway_notice("CALL REQUEST for x")
+    assert not adapter._is_gateway_notice("⚠️ Disk is almost full on mad")  # a real warning passes
     assert "[SILENT]" in adapter._AGENT_PROMPT
 
 

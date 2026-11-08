@@ -257,10 +257,10 @@ class CallController:
             steer=lambda text: self.host.steer(bare, sid, text),
         )
 
-    def _name(self, sid: str, bare: str, direction: str) -> None:
-        """Title the call's session: "Call from|to <person> <YYYY-MM-DD HH:MM>"."""
+    def _name(self, sid: str, bare: str, direction: str, topic: str = "") -> None:
+        """Title the call's session: "Call from|to <person> <YYYY-MM-DD HH:MM> [<topic>]"."""
         when = datetime.now().strftime("%Y-%m-%d %H:%M")
-        title = f"Call {direction} {bare.split('@', 1)[0]} {when}"
+        title = f"Call {direction} {bare.split('@', 1)[0]} {when}" + (f" {topic}" if topic else "")
         task = asyncio.create_task(self.host.name_call(bare, sid, title))
         self._background.add(task)
         task.add_done_callback(self._background.discard)
@@ -283,6 +283,7 @@ class CallController:
         *,
         uninterruptible: bool = False,
         hang_up_after: bool = False,
+        topic: str = "",
     ) -> str:
         """Call `peer` (bare JID) and, when answered, say `opening`. Returns a status sentence.
 
@@ -311,7 +312,7 @@ class CallController:
                 return (
                     "declined: the person rejected the call; the message was sent as text instead"
                 )
-            return await self._offer(full, proposal, opening, uninterruptible, hang_up_after)
+            return await self._offer(full, proposal, opening, uninterruptible, hang_up_after, topic)
         except Exception as error:
             logging.exception("calls: outgoing call to %s failed", peer)
             await self.end(proposal, "general-error", notify=True)
@@ -320,7 +321,13 @@ class CallController:
             self._ringing.pop(proposal, None)
 
     async def _offer(
-        self, full: str, sid: str, opening: str, uninterruptible: bool, hang_up_after: bool
+        self,
+        full: str,
+        sid: str,
+        opening: str,
+        uninterruptible: bool,
+        hang_up_after: bool,
+        topic: str = "",
     ) -> str:
         session = Session(sid, we_initiated=True)
         convo = self._conversation(sid, full.split("/", 1)[0])
@@ -349,7 +356,7 @@ class CallController:
         except TimeoutError:
             await self.end(sid, "connectivity-error", notify=True)
             return "failed: the call was accepted but audio never connected"
-        self._name(sid, full.split("/", 1)[0], "to")
+        self._name(sid, full.split("/", 1)[0], "to", topic)
         call.tasks.append(asyncio.create_task(self._limit(sid)))
         call.tasks.append(
             asyncio.create_task(self._deliver(sid, convo, opening, uninterruptible, hang_up_after))

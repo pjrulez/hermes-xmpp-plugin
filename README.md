@@ -328,6 +328,17 @@ Rules: only JIDs in `allowed_users` can call or be called; one call at a time (a
 hears busy); DTLS-SRTP is required and Opus is the only codec. If the dependencies are not
 installed the plugin logs a warning and chat keeps working.
 
+**Beeps.** Three short sounds tell you what the agent heard, without a word:
+
+| Sound | Meaning |
+|---|---|
+| One short beep | It heard you finish speaking and is sending your turn to the agent. Any noise the voice detector takes for speech also gets one, even if the transcript turns out empty. |
+| Two falling beeps | The agent is about to hang up (after a goodbye or with `hang_up_after`). Speak within `hangup_grace` seconds to keep the call open. |
+| "One moment." (spoken) | The agent is still working after `filler_after` seconds. |
+
+Short transcripts that are only a stock phrase such as "Thank you." or "Thanks for watching" are treated
+as noise and dropped, because speech-to-text models often invent them from room sound.
+
 **How it knows you finished.** Speech is told from noise by the WebRTC voice detector. After
 `silence_ms` without speech the turn is cut, the beep confirms it, and the agent answers. If you
 only paused to think and the agent has not replied yet, the two parts are joined into one turn.
@@ -342,7 +353,7 @@ queued. With `barge_in: stop` your voice cuts the agent off and its next turn is
 you heard. Say goodbye and the agent ends the call. A reply that cannot be spoken (TTS down or
 busy, after retries) is posted to the chat as text instead.
 
-**Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`), with the full
+**Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`, titled "Call from|to <person> <date time>", plus the `topic` the agent gave to `xmpp_call`, such as a cron job name), with the full
 history in your sessions list. The agent has all the tools of its profile in a call, including
 delegation and messaging; it is only asked to keep spoken replies short.
 

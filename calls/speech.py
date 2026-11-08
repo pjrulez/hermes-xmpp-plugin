@@ -20,7 +20,10 @@ PHANTOM_MAX_S = 3.0
 
 def is_phantom(text: str, seconds: float) -> bool:
     """A short utterance whose transcript is a stock phrase: noise, not the caller."""
-    return seconds < PHANTOM_MAX_S and re.sub(r"[^a-z ]", "", text.lower()).strip() in _PHANTOMS
+    letters = re.sub(r"[^a-z ]", "", text.lower()).strip()
+    if not any(c.isalnum() for c in text) or re.fullmatch(r"[\[(].*[\])]", text.strip()):
+        return True  # "♪♪♪", "[music]", "(silence)": sound effects, not words
+    return seconds < PHANTOM_MAX_S and letters in _PHANTOMS
 
 
 def clean(text: str) -> str:

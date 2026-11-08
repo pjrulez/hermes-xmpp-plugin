@@ -408,7 +408,15 @@ def _find_omemo_plugin(client: Any) -> Any:
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
 # Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
 # sends as chat; answering them would keep two agents talking forever.
-_STATUS_MARKS = ("⚡", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄", "⚠", "✏", "ℹ")
+_NOTICE_PREFIXES = ("⚡ Interrupting", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄")
+_NOTICE_PHRASES = ("returned only a silence marker",)  # the gateway's reply to a bare [SILENT]
+
+
+def _is_gateway_notice(text: str) -> bool:
+    text = (text or "").lstrip()
+    return text.startswith(_NOTICE_PREFIXES) or any(p in text for p in _NOTICE_PHRASES)
+
+
 _AGENT_PROMPT = (
     "This message comes from another automated agent, not from a person. Do not chat, thank or "
     "acknowledge it. If it asks for work, do it; if it needs no action, your whole reply must be "
@@ -1426,7 +1434,7 @@ class XmppAdapter(BasePlatformAdapter):
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
                 return
             if user_id.lower() in self._agent_peers and (
-                (stanza["body"] or "").lstrip().startswith(_STATUS_MARKS)
+                _is_gateway_notice(stanza["body"])
                 or not self._agent_peer_may_speak(user_id.lower())
             ):
                 return
@@ -1761,7 +1769,7 @@ class XmppAdapter(BasePlatformAdapter):
         if (
             content
             and self._bare(chat_id).lower() in self._agent_peers
-            and content.lstrip().startswith(_STATUS_MARKS)
+            and _is_gateway_notice(content)
         ):
             logger.info("xmpp: not sending a status line to agent peer %s", chat_id)
             return SendResult(success=True)
@@ -2928,6 +2936,11 @@ _CALL_TOOL_SCHEMA = {
                 "type": "boolean",
                 "description": "True to end the call when the opening is done instead of taking questions.",
             },
+            "topic": {
+                "type": "string",
+                "description": "Short name of what the call is about (e.g. a cron job name). "
+                "It becomes part of the call's session title.",
+            },
             "to": {
                 "type": "string",
                 "description": "Bare JID to call. Must be an allowed user. Optional when there is only one.",
@@ -2972,6 +2985,7 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             opening,
             uninterruptible=_truthy(args.get("uninterruptible")),
             hang_up_after=_truthy(args.get("hang_up_after")),
+            topic=str(args.get("topic") or "")[:60],
         ),
         adapter_._calls_loop,)
     try:
