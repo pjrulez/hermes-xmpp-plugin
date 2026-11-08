@@ -409,7 +409,7 @@ def _find_omemo_plugin(client: Any) -> Any:
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
 # Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
 # sends as chat; answering them would keep two agents talking forever.
-_NOTICE_PREFIXES = ("⚡ Interrupting", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄")
+_NOTICE_PREFIXES = ("⚡ Interrupting", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄", "💾")
 _NOTICE_PHRASES = ("returned only a silence marker",)  # the gateway's reply to a bare [SILENT]
 
 
@@ -911,6 +911,7 @@ class XmppAdapter(BasePlatformAdapter):
                 barge_in=self._calls_cfg["barge_in"],
                 hangup_grace=self._calls_cfg["hangup_grace"],
                 recap=self._calls_cfg["recap"],
+                busy_wait=self._calls_cfg["busy_wait"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -3096,6 +3097,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         ),
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "recap": _truthy(raw.get("recap", True)),
+        "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 

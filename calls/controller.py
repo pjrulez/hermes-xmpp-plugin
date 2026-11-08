@@ -13,11 +13,11 @@ from xml.etree import ElementTree as ET
 from . import turn
 from .audio import Endpointer, webrtc_vad
 from .conversation import Conversation, Speech
-from .speech import clean, split_hangup
 from .jingle import wire
 from .jingle.model import JINGLE, RTP, Jingle, JingleError
 from .jingle.session import IllegalTransition, Session
 from .media import CallMedia
+from .speech import clean, split_hangup
 
 JMI = "urn:xmpp:jingle-message:0"
 RTP_INFO = "urn:xmpp:jingle:apps:rtp:info:1"
@@ -78,6 +78,7 @@ class CallConfig:
     )
     ack_tone: bool = True  # short beep when an utterance is captured
     hangup_grace: float = 5.0  # warning beeps, then this long to speak before a planned hang-up
+    busy_wait: float = 90.0  # outgoing calls wait this long for the current call to end
     recap: bool = True  # after a call with talk in it, text the person what was asked and done
     barge_in: str = (
         "queue"  # "queue": talk any time, it becomes the next turn; "stop": cut the agent off
@@ -312,6 +313,9 @@ class CallController:
         """
         if not self.host.authorized(peer):
             return f"refused: {peer} is not allowed to be called"
+        deadline = asyncio.get_running_loop().time() + self.config.busy_wait
+        while self._busy() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)  # noqa: ASYNC110  (polls a plain dict; a result can arrive as a call ends)
         if self._busy():
             return "busy: another call is in progress"
         proposal = str(uuid.uuid4())
