@@ -10,6 +10,7 @@ from .model import (
     Content,
     Fingerprint,
     Jingle,
+    JingleError,
     PayloadType,
     SecurityError,
     Transport,
@@ -62,9 +63,16 @@ def candidate_to_sdp(c: Candidate) -> str:
 
 def candidate_from_sdp(value: str, generation: int = 0) -> Candidate:
     """Parse `foundation component proto priority ip port typ type [raddr x rport y]`."""
+    try:
+        return _candidate_from_sdp(value, generation)
+    except (ValueError, IndexError) as error:
+        raise JingleError(f"bad candidate: {value[:80]!r}") from error
+
+
+def _candidate_from_sdp(value: str, generation: int) -> Candidate:
     parts = value.removeprefix("candidate:").split()
     if len(parts) < 8 or parts[6] != "typ":
-        raise ValueError(f"bad candidate: {value!r}")
+        raise JingleError(f"bad candidate: {value[:80]!r}")
     extra = dict(zip(parts[8::2], parts[9::2], strict=False))
     return Candidate(
         foundation=parts[0],

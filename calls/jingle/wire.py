@@ -15,6 +15,7 @@ from .model import (
     Content,
     Fingerprint,
     Jingle,
+    JingleError,
     PayloadType,
     Transport,
 )
@@ -25,7 +26,15 @@ def _q(namespace: str, tag: str) -> str:
 
 
 def parse(element: ET.Element) -> Jingle:
-    """Parse a `<jingle xmlns='urn:xmpp:jingle:1'>` element. Unknown children are ignored."""
+    """Parse a `<jingle xmlns='urn:xmpp:jingle:1'>` element. Unknown children are ignored.
+    Malformed values (a peer's input) raise JingleError, never a bare ValueError."""
+    try:
+        return _parse(element)
+    except (ValueError, TypeError) as error:
+        raise JingleError(f"malformed jingle element: {error}") from error
+
+
+def _parse(element: ET.Element) -> Jingle:
     if element.tag != _q(JINGLE, "jingle"):
         raise ValueError(f"not a jingle element: {element.tag}")
     group = tuple(
