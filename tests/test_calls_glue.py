@@ -219,7 +219,7 @@ def test_speech_uses_hermes_stt_and_tts(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- xmpp_call tool
 
 def test_tool_reports_disabled_when_no_adapter_is_live(monkeypatch):
-    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", None)
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {})
     assert adapter._calls_available() is False
     out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
     assert out["success"] is False and "not enabled" in out["status"]
@@ -239,7 +239,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
 
     a._calls = types.SimpleNamespace(place_call=place_call)
     a._calls_loop = loop
-    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", a)
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
     try:
         out = json.loads(adapter._xmpp_call_tool(
             {"opening": "Your backup finished.", "uninterruptible": True, "hang_up_after": "false"}))
@@ -254,7 +254,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
 def test_tool_needs_a_target_when_several_users_are_allowed(monkeypatch):
     a = make_adapter(calls={"enabled": True}, allowed_users="a@example.org,b@example.org")
     a._calls, a._calls_loop = object(), object()
-    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", a)
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
     out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
     assert out["success"] is False and "who to call" in out["status"]
 
@@ -308,3 +308,25 @@ def test_steer_sends_a_steer_command_for_the_pending_turn(monkeypatch):
     assert sent[0].message_id.startswith("call-steer-")
     assert sent[0].source.thread_id == "call-sid"
     assert host.capture("user@example.org", "ack", sent[0].message_id) is False
+
+
+def test_each_profile_in_one_gateway_finds_its_own_adapter(monkeypatch, tmp_path):
+    """multiplex_profiles: two profiles with calls in one process must not share an adapter."""
+    homes = {"default": tmp_path / "default", "smartphone": tmp_path / "smartphone"}
+    current = {"home": homes["default"]}
+    monkeypatch.setattr(adapter, "_hermes_home", lambda: str(current["home"]))
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {})
+    adapters = {}
+    for name, home in homes.items():
+        current["home"] = home
+        a = make_adapter(calls={"enabled": True})
+        a._calls = a._build_calls(MagicMock())  # as connect() does
+        adapters[name] = a
+    for name, home in homes.items():
+        current["home"] = home
+        assert adapter._live_adapter() is adapters[name]
+    current["home"] = homes["smartphone"]
+    asyncio.run(adapters["smartphone"].disconnect())
+    assert adapter._live_adapter() is None
+    current["home"] = homes["default"]
+    assert adapter._live_adapter() is adapters["default"]

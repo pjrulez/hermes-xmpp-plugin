@@ -602,6 +602,7 @@ class XmppAdapter(BasePlatformAdapter):
         self._calls: Optional[Any] = None  # calls.controller.CallController while connected
         self._calls_host: Optional[Any] = None  # calls.hermes_host.HermesCallHost
         self._calls_loop: Optional[asyncio.AbstractEventLoop] = None  # loop that owns the calls
+        self._calls_key = ""  # Hermes home this adapter registered its calls under
         self._known_mucs = {r.room for r in self.muc_rooms}
         # Bare JIDs we have observed sending us 1:1 ("chat") messages. Used to
         # keep _is_muc() from misclassifying a real user as a group when the
@@ -875,8 +876,8 @@ class XmppAdapter(BasePlatformAdapter):
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
-            global _ACTIVE_ADAPTER
-            _ACTIVE_ADAPTER = self  # the xmpp_call tool finds the live adapter here
+            self._calls_key = _home_key()
+            _CALL_ADAPTERS[self._calls_key] = self  # the xmpp_call tool finds its adapter here
             try:
                 self._calls_loop = asyncio.get_running_loop()  # connect() runs on it
             except RuntimeError:
@@ -920,9 +921,8 @@ class XmppAdapter(BasePlatformAdapter):
             except Exception:
                 logger.exception("xmpp: closing calls failed")
             self._calls = self._calls_host = None
-            global _ACTIVE_ADAPTER
-            if _ACTIVE_ADAPTER is self:
-                _ACTIVE_ADAPTER = None
+            if _CALL_ADAPTERS.get(getattr(self, "_calls_key", "")) is self:
+                del _CALL_ADAPTERS[self._calls_key]
         # Capture the client once: teardown below must work from this
         # reference even though self.client is cleared unconditionally.
         client = self.client
@@ -2807,7 +2807,17 @@ async def _cache_audio_bytes(data: bytes, ext: str) -> str:
 # ---------------------------------------------------------------------
 
 _CALL_GREETING = "Hi, I'm here. What can I do for you?"
-_ACTIVE_ADAPTER: Optional["XmppAdapter"] = None  # set while calls are enabled and connected
+# Adapters with live calls, by Hermes home. One gateway process may serve several profiles
+# (multiplex_profiles), each with its own XMPP account; the agent tool finds its own profile's.
+_CALL_ADAPTERS: Dict[str, "XmppAdapter"] = {}
+
+
+def _home_key() -> str:
+    return os.path.realpath(_hermes_home())
+
+
+def _live_adapter() -> Optional["XmppAdapter"]:
+    return _CALL_ADAPTERS.get(_home_key())
 
 _CALL_TOOL_SCHEMA = {
     "name": "xmpp_call",
@@ -2850,7 +2860,8 @@ _CALL_TOOL_SCHEMA = {
 
 
 def _calls_available() -> bool:
-    return _ACTIVE_ADAPTER is not None and _ACTIVE_ADAPTER._calls is not None
+    adapter_ = _live_adapter()
+    return adapter_ is not None and adapter_._calls is not None
 
 
 def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
@@ -2859,7 +2870,7 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
     def result(success: bool, message: str) -> str:
         return json.dumps({"success": success, "status": message})
 
-    adapter_ = _ACTIVE_ADAPTER
+    adapter_ = _live_adapter()
     if adapter_ is None or adapter_._calls is None or adapter_._calls_loop is None:
         return result(False, "calls are not enabled or XMPP is not connected")
     opening = str((args or {}).get("opening") or "").strip()
