@@ -21,7 +21,7 @@ All notable changes to this project will be documented in this file.
 - **Audio calls (Jingle RTP, optional)**: `xmpp.calls.enabled` lets allowed JIDs call the bot
   (XEP-0166/0167/0176/0320/0353 over aiortc). Speech goes through the configured `stt` and `tts`
   providers, replies are normal agent turns, barge-in and a spoken hang-up are supported. Code
-  lives in `calls/`; dependencies are in `requirements-calls.txt`. Off by default.
+  lives in `calls/`; dependencies are in `requirements-calls.txt`. Off by default. The `xmpp_call` agent tool places an outgoing call (also usable from cron jobs).
 - **Inbound voice notes → Hermes STT**: a message that is exactly one audio
   attachment and no text (XEP-0066 OOB, XEP-0447 SFS with an `audio/*`
   media type, or an OMEMO `aesgcm://` link per XEP-0454) is downloaded into

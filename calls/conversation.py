@@ -49,6 +49,7 @@ class Conversation:
         self.speech, self.respond, self.on_hangup = speech, respond, on_hangup
         self.filler_after = filler_after  # seconds of waiting for the agent before "One moment."
         self._filler_audio: np.ndarray | None = None
+        self._cache: dict[str, np.ndarray] = {}  # sentence -> audio synthesized ahead of time
         self._endpointer = Endpointer()
         self.playback = PlaybackTrack()
         self._task: asyncio.Task[None] | None = None  # the running turn
@@ -60,6 +61,15 @@ class Conversation:
         """CallMedia hook: start listening to the caller, return the track we speak on."""
         self._listener = asyncio.create_task(self._listen(incoming))
         return self.playback
+
+    async def prepare(self, text: str) -> None:
+        """Synthesize `text` now (e.g. while the phone rings) so `say()` starts without a gap."""
+        for part in sentences(text):
+            self._cache[part] = await self.speech.synthesize(part)
+
+    def remember(self, spoken: str) -> None:
+        """Tell the agent, on its next turn, what it said before the caller spoke."""
+        self._note = f"[You placed this call and began by saying: {spoken}] "
 
     async def say(self, text: str) -> None:
         """Speak without a turn (greeting, outgoing-call opening)."""
@@ -164,7 +174,9 @@ class Conversation:
     async def _speak(self, turn: Turn) -> None:
         self._turn = turn
         for part in turn.parts:
-            audio = await self.speech.synthesize(part)
+            audio = self._cache.pop(part, None)
+            if audio is None:
+                audio = await self.speech.synthesize(part)
             turn.samples.append(len(audio))
             self.playback.play(audio)
 

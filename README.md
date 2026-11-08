@@ -299,7 +299,13 @@ xmpp:
     max_seconds: 600       # hang up after this long
     greeting: "Hi, I'm here. What can I do for you?"   # "" for none
     filler_after: 3.0      # say "One moment." if the agent takes longer than this
+    ring_timeout: 45       # outgoing calls: give up after this many seconds
 ```
+
+**The agent can call you.** With calls enabled the plugin registers the `xmpp_call` tool (toolset
+`xmpp_calls`; add it to the toolsets your gateway or cron jobs use). The agent supplies an
+opening line, the call rings your devices, the opening is spoken the moment you pick up, and the
+conversation continues as above. Only allowed users can be called; one call at a time.
 
 Rules: only JIDs in `allowed_users` can call; one call at a time (a second caller hears busy);
 DTLS-SRTP is required and Opus is the only codec. The server must offer STUN/TURN through

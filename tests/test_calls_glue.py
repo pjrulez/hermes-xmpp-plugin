@@ -66,7 +66,9 @@ def test_calls_are_off_by_default():
 
 def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
-    assert a._calls_cfg == {"enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0}
+    assert a._calls_cfg == {
+        "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 45,
+    }
 
 
 def test_bad_numbers_fall_back():
@@ -98,7 +100,7 @@ def test_enabled_builds_controller_and_installs_handlers():
     controller = a._build_calls(client)
     assert controller is not None
     assert a._calls_host is not None
-    assert client.register_handler.call_count == 3  # propose, retract, jingle
+    assert client.register_handler.call_count == 5  # propose, retract, proceed, reject, jingle
     client.register_plugin.assert_called_with("xep_0115")
 
 
@@ -206,3 +208,56 @@ def test_speech_uses_hermes_stt_and_tts(tmp_path, monkeypatch):
     audio = asyncio.run(speech.synthesize("Hi."))
     assert 47000 <= len(audio) <= 49000  # 1 s at 48 kHz
     assert not wav_path.exists()  # cleaned up after decoding
+
+
+# ---------------------------------------------------------------- xmpp_call tool
+
+def test_tool_reports_disabled_when_no_adapter_is_live(monkeypatch):
+    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", None)
+    assert adapter._calls_available() is False
+    out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
+    assert out["success"] is False and "not enabled" in out["status"]
+
+
+def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
+    import threading
+
+    a = make_adapter(calls={"enabled": True})
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    seen = []
+
+    async def place_call(peer, opening):
+        seen.append((peer, opening, threading.current_thread() is not threading.main_thread()))
+        return "connected: the call is up"
+
+    a._calls = types.SimpleNamespace(place_call=place_call)
+    a._calls_loop = loop
+    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", a)
+    try:
+        out = json.loads(adapter._xmpp_call_tool({"opening": "Your backup finished."}))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert out == {"success": True, "status": "connected: the call is up"}
+    assert seen == [("user@example.org", "Your backup finished.", True)]
+    assert adapter._calls_available() is True
+
+
+def test_tool_needs_a_target_when_several_users_are_allowed(monkeypatch):
+    a = make_adapter(calls={"enabled": True}, allowed_users="a@example.org,b@example.org")
+    a._calls, a._calls_loop = object(), object()
+    monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", a)
+    out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
+    assert out["success"] is False and "who to call" in out["status"]
+
+
+def test_register_adds_the_tool_and_survives_old_hermes():
+    ctx = MagicMock()
+    adapter.register(ctx)
+    assert ctx.register_tool.call_args.kwargs["name"] == "xmpp_call"
+    assert ctx.register_platform.called
+
+    old = MagicMock()
+    old.register_tool.side_effect = AttributeError
+    adapter.register(old)
+    assert old.register_platform.called

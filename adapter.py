@@ -601,6 +601,7 @@ class XmppAdapter(BasePlatformAdapter):
         self._calls_cfg: Dict[str, Any] = _calls_settings(extra)
         self._calls: Optional[Any] = None  # calls.controller.CallController while connected
         self._calls_host: Optional[Any] = None  # calls.hermes_host.HermesCallHost
+        self._calls_loop: Optional[asyncio.AbstractEventLoop] = None  # loop that owns the calls
         self._known_mucs = {r.room for r in self.muc_rooms}
         # Bare JIDs we have observed sending us 1:1 ("chat") messages. Used to
         # keep _is_muc() from misclassifying a real user as a group when the
@@ -861,9 +862,16 @@ class XmppAdapter(BasePlatformAdapter):
                 max_seconds=self._calls_cfg["max_seconds"],
                 greeting=self._calls_cfg["greeting"],
                 filler_after=self._calls_cfg["filler_after"],
+                ring_timeout=self._calls_cfg["ring_timeout"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
+            global _ACTIVE_ADAPTER
+            _ACTIVE_ADAPTER = self  # the xmpp_call tool finds the live adapter here
+            try:
+                self._calls_loop = asyncio.get_running_loop()  # connect() runs on it
+            except RuntimeError:
+                self._calls_loop = None
             logger.info("xmpp: audio calls enabled")
             return calls
         except Exception as exc:
@@ -903,6 +911,9 @@ class XmppAdapter(BasePlatformAdapter):
             except Exception:
                 logger.exception("xmpp: closing calls failed")
             self._calls = self._calls_host = None
+            global _ACTIVE_ADAPTER
+            if _ACTIVE_ADAPTER is self:
+                _ACTIVE_ADAPTER = None
         # Capture the client once: teardown below must work from this
         # reference even though self.client is cleared unconditionally.
         client = self.client
@@ -2787,6 +2798,65 @@ async def _cache_audio_bytes(data: bytes, ext: str) -> str:
 # ---------------------------------------------------------------------
 
 _CALL_GREETING = "Hi, I'm here. What can I do for you?"
+_ACTIVE_ADAPTER: Optional["XmppAdapter"] = None  # set while calls are enabled and connected
+
+_CALL_TOOL_SCHEMA = {
+    "name": "xmpp_call",
+    "description": (
+        "Place a voice call to the user over XMPP and speak an opening line when they answer; the "
+        "conversation then continues by voice. Use only when something warrants interrupting "
+        "them (an urgent alert, a finished long task they asked to be told about). One call at a "
+        "time. Returns whether the call connected, was declined, or went unanswered."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "opening": {
+                "type": "string",
+                "description": "What you say as soon as they answer: one or two short plain sentences.",
+            },
+            "to": {
+                "type": "string",
+                "description": "Bare JID to call. Must be an allowed user. Optional when there is only one.",
+            },
+        },
+        "required": ["opening"],
+    },
+}
+
+
+def _calls_available() -> bool:
+    return _ACTIVE_ADAPTER is not None and _ACTIVE_ADAPTER._calls is not None
+
+
+def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
+    """Agent tool: runs in a worker thread, so hand the call to the adapter's event loop."""
+
+    def result(success: bool, message: str) -> str:
+        return json.dumps({"success": success, "status": message})
+
+    adapter_ = _ACTIVE_ADAPTER
+    if adapter_ is None or adapter_._calls is None or adapter_._calls_loop is None:
+        return result(False, "calls are not enabled or XMPP is not connected")
+    opening = str((args or {}).get("opening") or "").strip()
+    if not opening:
+        return result(False, "an opening line is required")
+    allowed = sorted(adapter_.allowed_users)
+    target = adapter_._bare(str(args.get("to") or "")) if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
+    if not target:
+        return result(False, "say who to call: more than one user is allowed")
+    try:
+        if asyncio.get_running_loop() is adapter_._calls_loop:
+            return result(False, "cannot place a call from the XMPP event loop thread")
+    except RuntimeError:
+        pass  # no loop in this thread: the normal worker-thread case
+    future = asyncio.run_coroutine_threadsafe(adapter_._calls.place_call(target, opening), adapter_._calls_loop)
+    try:
+        status = future.result(timeout=adapter_._calls_cfg["ring_timeout"] + 60)
+    except Exception as exc:
+        future.cancel()
+        return result(False, f"call failed: {exc}")
+    return result(status.startswith("connected"), status)
 
 
 def _calls_settings(extra: Any) -> Dict[str, Any]:
@@ -2806,6 +2876,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "max_seconds": number("max_seconds", 600, int),
         "greeting": str(raw.get("greeting", _CALL_GREETING)),
         "filler_after": number("filler_after", 3.0, float),
+        "ring_timeout": number("ring_timeout", 45, int),
     }
 
 
@@ -3057,6 +3128,14 @@ def _build_adapter(config: PlatformConfig) -> XmppAdapter:
 
 
 def register(ctx) -> None:
+    try:
+        ctx.register_tool(
+            name="xmpp_call", toolset="xmpp_calls", schema=_CALL_TOOL_SCHEMA,
+            handler=_xmpp_call_tool, check_fn=_calls_available,
+            description=_CALL_TOOL_SCHEMA["description"], emoji="📞",
+        )
+    except Exception:  # older Hermes without plugin tools: chat still works
+        logger.debug("xmpp: could not register the xmpp_call tool", exc_info=True)
     ctx.register_platform(
         name="xmpp",
         label="XMPP/Jabber",

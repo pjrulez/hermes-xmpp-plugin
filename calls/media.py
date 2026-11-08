@@ -46,6 +46,22 @@ class CallMedia:
         self._ready.set()
         return answer_to_content(self.pc.localDescription.sdp, offered)
 
+    async def offer(self) -> Content:
+        """Outgoing call: build our offer. The peer's `session-accept` goes to `accept()`."""
+        transceiver = self.pc.addTransceiver("audio", "sendrecv")
+        transceiver.sender.replaceTrack(self._make_outgoing(transceiver.receiver.track))
+        await self.pc.setLocalDescription(await self.pc.createOffer())
+        content = answer_to_content(self.pc.localDescription.sdp, Content("initiator", "0"))
+        self._mid = content.name
+        return content
+
+    async def accept(self, accepted: Jingle) -> None:
+        """Apply the peer's `session-accept` to our offer."""
+        text = offer_to_sdp(accepted)  # same checks: DTLS and Opus required
+        self._mid = next(c.name for c in accepted.contents if c.media == "audio")
+        await self.pc.setRemoteDescription(RTCSessionDescription(text, "answer"))
+        self._ready.set()
+
     async def add_candidate(self, candidate: Candidate) -> None:
         """Trickled remote candidate. Waits for the answer; ignores RTCP component 2 (rtcp-mux)."""
         await self._ready.wait()
