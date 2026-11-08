@@ -85,7 +85,7 @@ class CallConfig:
     ack_tone: bool = True  # short beep when an utterance is captured
     hangup_grace: float = 5.0  # warning beeps, then this long to speak before a planned hang-up
     busy_wait: float = 90.0  # outgoing calls wait this long for the current call to end
-    idle_timeout: float = 180.0  # nobody has spoken for this long: say goodbye and hang up (0: off)
+    idle_timeout: float = 60.0  # nobody has spoken for this long: say goodbye and hang up (0: off)
     log_transcripts: bool = False  # log what was said (default: only how many words)
     recap: bool = True  # after a call with talk in it, text the person what was asked and done
     barge_in: str = (

@@ -3175,7 +3175,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         ),
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "recap": _truthy(raw.get("recap", True)),
-        "idle_timeout": max(0.0, number("idle_timeout", 180.0, float)),
+        "idle_timeout": max(0.0, number("idle_timeout", 60.0, float)),
         "log_transcripts": _truthy(raw.get("log_transcripts", False)),
         "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
         "ring_attempts": max(1, number("ring_attempts", 1, int)),

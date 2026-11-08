@@ -69,7 +69,7 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 60,
-        "recap": True, "idle_timeout": 180.0, "log_transcripts": False, "busy_wait": 90.0, "ring_attempts": 1, "ring_pause": 60.0, "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
+        "recap": True, "idle_timeout": 60.0, "log_transcripts": False, "busy_wait": 90.0, "ring_attempts": 1, "ring_pause": 60.0, "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
     }
 
 

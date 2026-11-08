@@ -331,7 +331,7 @@ Every option, with its default:
 | `silence_ms` | `800` | Pause that ends your turn. Raise it (1000-1500) if you get cut off while thinking; lower it for snappier answers. |
 | `vad_level` | `2` | Noise rejection, 0-3. Higher ignores more background noise but may miss soft speech. Steady hum, fans and hiss are ignored at every level. |
 | `ack_tone` | `true` | A short beep when your turn is captured, so you know it heard you finish. |
-| `idle_timeout` | `180` | Seconds without anyone speaking (and no reply playing or being worked on) before the agent says goodbye and hangs up. `0` turns it off. |
+| `idle_timeout` | `60` | Seconds without anyone speaking (and no reply playing or being worked on) before the agent says goodbye and hangs up. `0` turns it off. |
 | `log_transcripts` | `false` | Put what was said into the log. Off: the log only has how many words. Call audio is never written to disk. |
 | `hangup_grace` | `5` | Seconds you get to speak, after two falling warning beeps, before the agent hangs up (a goodbye, or `hang_up_after`). Speaking cancels the hang-up. `0` hangs up at once. |
 | `recap` | `true` | After a call in which you asked for something, the agent texts you one or two sentences saying what you asked and what it did about it (it is silent if you asked for nothing). |
