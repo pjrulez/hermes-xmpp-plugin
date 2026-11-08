@@ -235,8 +235,18 @@ class CallController:
 
     # ---- outgoing calls ------------------------------------------------------------------
 
-    async def place_call(self, peer: str, opening: str) -> str:
+    async def place_call(
+        self,
+        peer: str,
+        opening: str,
+        *,
+        uninterruptible: bool = False,
+        hang_up_after: bool = False,
+    ) -> str:
         """Call `peer` (bare JID) and, when answered, say `opening`. Returns a status sentence.
+
+        `uninterruptible`: the opening is delivered whole whatever the person says meanwhile.
+        `hang_up_after`: end the call when the opening is done instead of taking questions.
 
         Never raises. The conversation then runs on its own; this returns once the call is up
         or has failed, so an agent tool can report the outcome.
@@ -256,7 +266,7 @@ class CallController:
                 return "no answer: nobody picked up in time"
             if full is None:
                 return "declined: the person rejected the call"
-            return await self._offer(full, proposal, opening)
+            return await self._offer(full, proposal, opening, uninterruptible, hang_up_after)
         except Exception as error:
             logging.exception("calls: outgoing call to %s failed", peer)
             await self.end(proposal, "general-error", notify=True)
@@ -264,13 +274,15 @@ class CallController:
         finally:
             self._ringing.pop(proposal, None)
 
-    async def _offer(self, full: str, sid: str, opening: str) -> str:
+    async def _offer(
+        self, full: str, sid: str, opening: str, uninterruptible: bool, hang_up_after: bool
+    ) -> str:
         session = Session(sid, we_initiated=True)
         convo = self._conversation(sid, full.split("/", 1)[0])
         convo.remember(opening)
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[sid] = Call(full, session, media, convo)
-        call.tasks.append(asyncio.create_task(convo.prepare(opening)))  # ready before they answer
+        convo.prepare(opening)  # synthesized while the phone rings
         content = await media.offer()
         session.apply("session-initiate", sent_by_us=True)
         initiate = Jingle(
@@ -292,8 +304,23 @@ class CallController:
             await self.end(sid, "connectivity-error", notify=True)
             return "failed: the call was accepted but audio never connected"
         call.tasks.append(asyncio.create_task(self._limit(sid)))
-        call.tasks.append(asyncio.create_task(convo.say(opening)))
+        call.tasks.append(
+            asyncio.create_task(self._deliver(sid, convo, opening, uninterruptible, hang_up_after))
+        )
         return "connected: the call is up and the opening is being spoken"
+
+    async def _deliver(
+        self,
+        sid: str,
+        convo: Conversation,
+        opening: str,
+        uninterruptible: bool,
+        hang_up_after: bool,
+    ) -> None:
+        await convo.say(opening, protected=uninterruptible)
+        if hang_up_after:
+            await convo.playback.wait_idle()
+            await self.end(sid, "success", notify=True)
 
     async def _greet(self, call: Call) -> None:
         await call.media.connected.wait()
@@ -301,7 +328,14 @@ class CallController:
             await call.convo.say(self.config.greeting)
 
     async def _limit(self, sid: str) -> None:
-        await asyncio.sleep(self.config.max_seconds)
+        """Enforce the call time limit; meanwhile log RTP counts every 10 s (is audio flowing?)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.max_seconds
+        while (left := deadline - loop.time()) > 0:
+            await asyncio.sleep(min(10, left))
+            call = self.calls.get(sid)
+            if call is not None:
+                logging.info("calls: %s rtp received/sent %s", sid[:8], await call.media.packets())
         await self.end(sid, "success", notify=True)
 
     async def end(self, sid: str, reason: str | None, notify: str | bool = False) -> None:

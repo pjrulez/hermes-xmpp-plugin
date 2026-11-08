@@ -2806,17 +2806,32 @@ _ACTIVE_ADAPTER: Optional["XmppAdapter"] = None  # set while calls are enabled a
 _CALL_TOOL_SCHEMA = {
     "name": "xmpp_call",
     "description": (
-        "Place a voice call to the user over XMPP and speak an opening line when they answer; the "
-        "conversation then continues by voice. Use only when something warrants interrupting "
-        "them (an urgent alert, a finished long task they asked to be told about). One call at a "
-        "time. Returns whether the call connected, was declined, or went unanswered."
+        "Place a voice call to the user over XMPP and speak an opening (a line or a whole briefing) "
+        "when they answer; unless hang_up_after is set the conversation then continues by voice. "
+        "Use only when something warrants interrupting them (an urgent alert, a finished task "
+        "they asked to be told about). One call at a time. Returns whether the call connected, "
+        "was declined, or went unanswered. The call keeps running after this returns."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "opening": {
                 "type": "string",
-                "description": "What you say as soon as they answer: one or two short plain sentences.",
+                "description": (
+                    "What you say as soon as they answer. A short greeting, or a whole briefing "
+                    "written as plain spoken sentences (no markdown, lists or links)."
+                ),
+            },
+            "uninterruptible": {
+                "type": "boolean",
+                "description": (
+                    "True to deliver the opening in full even if the person starts talking "
+                    "(a briefing they asked for). Default false: they may interrupt."
+                ),
+            },
+            "hang_up_after": {
+                "type": "boolean",
+                "description": "True to end the call when the opening is done instead of taking questions.",
             },
             "to": {
                 "type": "string",
@@ -2853,7 +2868,13 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             return result(False, "cannot place a call from the XMPP event loop thread")
     except RuntimeError:
         pass  # no loop in this thread: the normal worker-thread case
-    future = asyncio.run_coroutine_threadsafe(adapter_._calls.place_call(target, opening), adapter_._calls_loop)
+    future = asyncio.run_coroutine_threadsafe(adapter_._calls.place_call(
+            target,
+            opening,
+            uninterruptible=_truthy(args.get("uninterruptible")),
+            hang_up_after=_truthy(args.get("hang_up_after")),
+        ),
+        adapter_._calls_loop,)
     try:
         status = future.result(timeout=adapter_._calls_cfg["ring_timeout"] + 60)
     except Exception as exc:

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from typing import Any
 
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from aiortc.contrib.media import MediaRelay
@@ -13,6 +14,24 @@ from .jingle.model import Candidate, Content, Jingle
 from .jingle.sdp import answer_to_content, candidate_to_sdp, offer_to_sdp
 
 Transform = Callable[[MediaStreamTrack], MediaStreamTrack]
+
+
+class _LateTrack(MediaStreamTrack):
+    """The caller's audio for an outgoing call: aiortc creates the receiving track only once the
+    peer's answer is applied, so readers wait for `resolve()` instead of getting None."""
+
+    kind = "audio"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._track: asyncio.Future[MediaStreamTrack] = asyncio.get_running_loop().create_future()
+
+    def resolve(self, track: MediaStreamTrack) -> None:
+        if not self._track.done():
+            self._track.set_result(track)
+
+    async def recv(self) -> Any:
+        return await (await self._track).recv()
 
 
 class CallMedia:
@@ -26,6 +45,8 @@ class CallMedia:
         self._make_outgoing = make_outgoing or relay.subscribe
         self._ready = asyncio.Event()
         self._mid = ""
+        self._transceiver: Any = None
+        self._late: _LateTrack | None = None
         self.connected = asyncio.Event()
         self.pc.on("connectionstatechange", self._on_state)
 
@@ -48,8 +69,9 @@ class CallMedia:
 
     async def offer(self) -> Content:
         """Outgoing call: build our offer. The peer's `session-accept` goes to `accept()`."""
-        transceiver = self.pc.addTransceiver("audio", "sendrecv")
-        transceiver.sender.replaceTrack(self._make_outgoing(transceiver.receiver.track))
+        self._transceiver = self.pc.addTransceiver("audio", "sendrecv")
+        self._late = _LateTrack()
+        self._transceiver.sender.replaceTrack(self._make_outgoing(self._late))
         await self.pc.setLocalDescription(await self.pc.createOffer())
         content = answer_to_content(self.pc.localDescription.sdp, Content("initiator", "0"))
         self._mid = content.name
@@ -60,6 +82,8 @@ class CallMedia:
         text = offer_to_sdp(accepted)  # same checks: DTLS and Opus required
         self._mid = next(c.name for c in accepted.contents if c.media == "audio")
         await self.pc.setRemoteDescription(RTCSessionDescription(text, "answer"))
+        if self._late is not None:
+            self._late.resolve(self._transceiver.receiver.track)
         self._ready.set()
 
     async def add_candidate(self, candidate: Candidate) -> None:

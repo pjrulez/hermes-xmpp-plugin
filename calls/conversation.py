@@ -62,7 +62,10 @@ class Conversation:
         self._ack = ack_tone() if ack_tone_enabled else None
         self.filler_after = filler_after  # seconds of waiting for the agent before "One moment."
         self._filler_audio: np.ndarray | None = None
-        self._cache: dict[str, np.ndarray] = {}  # sentence -> audio synthesized ahead of time
+        self._cache: dict[
+            str, asyncio.Future[np.ndarray]
+        ] = {}  # sentence -> audio being made ahead
+        self._protected = False  # speaking something the caller must not interrupt
         self._endpointer = endpointer or Endpointer()
         self._turn_pcm: np.ndarray | None = None  # caller audio of a turn with no reply yet
         self.playback = PlaybackTrack()
@@ -76,26 +79,38 @@ class Conversation:
         self._listener = asyncio.create_task(self._listen(incoming))
         return self.playback
 
-    async def prepare(self, text: str) -> None:
-        """Synthesize `text` now (e.g. while the phone rings) so `say()` starts without a gap."""
+    def prepare(self, text: str) -> None:
+        """Start synthesizing `text` now (e.g. while the phone rings) so `say()` has no gap."""
         for part in sentences(text):
-            self._cache[part] = await self.speech.synthesize(part)
+            if part not in self._cache:
+                self._cache[part] = asyncio.ensure_future(self.speech.synthesize(part))
 
     def remember(self, spoken: str) -> None:
         """Tell the agent, on its next turn, what it said before the caller spoke."""
         self._note = f"[You placed this call and began by saying: {spoken}] "
 
-    async def say(self, text: str) -> None:
-        """Speak without a turn (greeting, outgoing-call opening)."""
-        await self._speak(Turn(sentences(text), self.playback.played))
+    async def say(self, text: str, *, protected: bool = False) -> None:
+        """Speak without a turn (greeting, outgoing-call opening). With `protected`, the caller
+        cannot interrupt: their speech is ignored until `text` has been played in full."""
+        self._protected = protected
+        try:
+            await self._speak(Turn(sentences(text), self.playback.played))
+            if protected:
+                await self.playback.wait_idle()
+        finally:
+            if protected:
+                self._protected = False
+                self._endpointer.reset()  # whatever they said meanwhile was not for us
 
     def caller_muted(self) -> None:
         """Jingle `mute` from the caller is a "stopped talking" signal: do not wait for silence."""
+        if self._protected:
+            return
         for utterance in self._endpointer.flush():
             self._start_turn(utterance.pcm)
 
     def stop(self) -> None:
-        for task in (self._listener, self._task):
+        for task in (self._listener, self._task, *self._cache.values()):
             if task and task is not asyncio.current_task():  # hang-up runs inside the turn task
                 task.cancel()
 
@@ -111,6 +126,8 @@ class Conversation:
                 else:
                     # Clients stop sending RTP when muted; feed silence so utterances still end.
                     pcm = np.zeros(int(STT_RATE * GAP_S), np.int16)
+                if self._protected:
+                    continue  # speaking a briefing: the caller's audio is read and dropped
                 for event in endpointer.feed(pcm):
                     if isinstance(event, SpeechHeld):
                         self._barge_in()
@@ -123,6 +140,8 @@ class Conversation:
                         self._start_turn(event.pcm)
         except MediaStreamError:
             return
+        except Exception:
+            logging.exception("call listener crashed")
         finally:
             pending.cancel()
 
@@ -202,9 +221,8 @@ class Conversation:
     async def _speak(self, turn: Turn) -> None:
         self._turn = turn
         for part in turn.parts:
-            audio = self._cache.pop(part, None)
-            if audio is None:
-                audio = await self.speech.synthesize(part)
+            ahead = self._cache.pop(part, None)
+            audio = await ahead if ahead is not None else await self.speech.synthesize(part)
             turn.samples.append(len(audio))
             self.playback.play(audio)
 

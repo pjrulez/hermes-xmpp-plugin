@@ -233,19 +233,21 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
     threading.Thread(target=loop.run_forever, daemon=True).start()
     seen = []
 
-    async def place_call(peer, opening):
-        seen.append((peer, opening, threading.current_thread() is not threading.main_thread()))
+    async def place_call(peer, opening, **options):
+        seen.append((peer, opening, threading.current_thread() is not threading.main_thread(), options))
         return "connected: the call is up"
 
     a._calls = types.SimpleNamespace(place_call=place_call)
     a._calls_loop = loop
     monkeypatch.setattr(adapter, "_ACTIVE_ADAPTER", a)
     try:
-        out = json.loads(adapter._xmpp_call_tool({"opening": "Your backup finished."}))
+        out = json.loads(adapter._xmpp_call_tool(
+            {"opening": "Your backup finished.", "uninterruptible": True, "hang_up_after": "false"}))
     finally:
         loop.call_soon_threadsafe(loop.stop)
     assert out == {"success": True, "status": "connected: the call is up"}
-    assert seen == [("user@example.org", "Your backup finished.", True)]
+    assert seen == [("user@example.org", "Your backup finished.", True,
+                     {"uninterruptible": True, "hang_up_after": False})]
     assert adapter._calls_available() is True
 
 

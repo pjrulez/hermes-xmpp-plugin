@@ -63,7 +63,7 @@ class Endpointer:
         *,
         silence_ms: int = 800,
         min_ms: int = 300,
-        max_ms: int = 20000,
+        max_ms: int = 30000,
         hold_ms: int = 300,
         preroll_ms: int = 200,
         is_speech: Callable[[np.ndarray], bool] | None = None,
@@ -90,6 +90,11 @@ class Endpointer:
             frame, self._pending = self._pending[:STT_FRAME], self._pending[STT_FRAME:]
             events += self._frame(frame)
         return events
+
+    def reset(self) -> None:
+        """Forget audio heard so far (the caller was not being listened to)."""
+        self._pending = np.zeros(0, np.int16)
+        self._open, self._frames, self._idle = False, [], []
 
     def flush(self) -> list[Utterance]:
         """The caller says they stopped talking (client muted): end the open utterance now."""
