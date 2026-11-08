@@ -68,7 +68,7 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 45,
-        "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue",
+        "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [],
     }
 
 
@@ -330,3 +330,45 @@ def test_each_profile_in_one_gateway_finds_its_own_adapter(monkeypatch, tmp_path
     assert adapter._live_adapter() is None
     current["home"] = homes["default"]
     assert adapter._live_adapter() is adapters["default"]
+
+
+def test_partner_agent_may_chat_but_never_phone(monkeypatch):
+    """The phone profile allows the default agent to message it; calls stay human-only."""
+    a = make_adapter(
+        allowed_users="user@example.org,agent@example.org",
+        calls={"enabled": True, "allowed_users": ["User@Example.org"]},
+    )
+    a._build_calls(MagicMock())
+    host = a._calls_host
+    assert host.authorized("user@example.org")
+    assert not host.authorized("agent@example.org")  # allowed to chat, not to call
+    assert a._is_authorized(chat_type="dm", chat_id="agent@example.org", user_jid="agent@example.org")
+    a._calls, a._calls_loop = object(), object()
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    # with two allowed users, the tool still knows whom to call
+    import threading
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    seen = []
+
+    async def place_call(peer, opening, **options):
+        seen.append(peer)
+        return "connected: up"
+
+    a._calls, a._calls_loop = types.SimpleNamespace(place_call=place_call), loop
+    try:
+        out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert out["success"] is True and seen == ["user@example.org"]
+
+
+def test_plaintext_peers_are_never_omemo_encrypted():
+    a = make_adapter(plaintext_peers=["Agent@Example.org"])
+    a._registered_plugins = {"xep_0384"}
+    assert adapter._csv(["a", "b"]) == "a,b"
+    on = adapter.SLIXMPP_OMEMO_AVAILABLE
+    assert a._use_omemo("user@example.org", "chat") is on
+    assert a._use_omemo("agent@example.org/res", "chat") is False
+    assert a._use_omemo("room@conference.example.org", "groupchat") is False

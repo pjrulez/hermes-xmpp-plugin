@@ -603,6 +603,11 @@ class XmppAdapter(BasePlatformAdapter):
         self._calls_host: Optional[Any] = None  # calls.hermes_host.HermesCallHost
         self._calls_loop: Optional[asyncio.AbstractEventLoop] = None  # loop that owns the calls
         self._calls_key = ""  # Hermes home this adapter registered its calls under
+        self._plaintext_peers: frozenset = frozenset(
+            self._bare(j.strip()).lower()
+            for j in _csv(extra.get("plaintext_peers", _scoped_getenv("XMPP_PLAINTEXT_PEERS", ""))).split(",")
+            if j.strip()
+        )
         self._known_mucs = {r.room for r in self.muc_rooms}
         # Bare JIDs we have observed sending us 1:1 ("chat") messages. Used to
         # keep _is_muc() from misclassifying a real user as a group when the
@@ -863,7 +868,9 @@ class XmppAdapter(BasePlatformAdapter):
             controller = import_module(f"{base}.controller")
             host_module = import_module(f"{base}.hermes_host")
             client.register_plugin("xep_0115")
-            self._calls_host = host_module.HermesCallHost(self)
+            self._calls_host = host_module.HermesCallHost(
+                self, frozenset(self._calls_cfg["allowed_users"])
+            )
             config = controller.CallConfig(
                 max_seconds=self._calls_cfg["max_seconds"],
                 greeting=self._calls_cfg["greeting"],
@@ -892,6 +899,16 @@ class XmppAdapter(BasePlatformAdapter):
             )
             self._calls_host = None
             return None
+
+    def _use_omemo(self, chat_id: str, mtype: str) -> bool:
+        """Encrypt this outgoing message? Not to `plaintext_peers` (partner agents on the same
+        trusted server, whose OMEMO sessions would only get in the way)."""
+        return (
+            "xep_0384" in self._registered_plugins
+            and SLIXMPP_OMEMO_AVAILABLE
+            and mtype == "chat"
+            and self._bare(chat_id).lower() not in self._plaintext_peers
+        )
 
     async def _connect_watchdog(self) -> None:
         try:
@@ -1706,11 +1723,7 @@ class XmppAdapter(BasePlatformAdapter):
         mtype = "groupchat" if self._is_muc(chat_id) else "chat"
 
         # OMEMO encrypt when available
-        if (
-            "xep_0384" in self._registered_plugins
-            and SLIXMPP_OMEMO_AVAILABLE
-            and mtype == "chat"
-        ):
+        if self._use_omemo(chat_id, mtype):
             try:
                 return await self._send_encrypted(chat_id, content)
             except Exception as exc:
@@ -1856,11 +1869,7 @@ class XmppAdapter(BasePlatformAdapter):
             )
 
             # OMEMO encrypt for 1:1 chats (same path as send())
-            if (
-                "xep_0384" in self._registered_plugins
-                and SLIXMPP_OMEMO_AVAILABLE
-                and mtype == "chat"
-            ):
+            if self._use_omemo(chat_id, mtype):
                 try:
                     xep_0384 = client_local["xep_0384"]
                     recipient_jid = JID(chat_id)
@@ -2876,7 +2885,7 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
     opening = str((args or {}).get("opening") or "").strip()
     if not opening:
         return result(False, "an opening line is required")
-    allowed = sorted(adapter_.allowed_users)
+    allowed = sorted(getattr(adapter_._calls_host, "callers", None) or adapter_.allowed_users)
     target = adapter_._bare(str(args.get("to") or "")) if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
     if not target:
         return result(False, "say who to call: more than one user is allowed")
@@ -2921,6 +2930,9 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "silence_ms": number("silence_ms", 800, int),
         "vad_level": min(3, max(0, number("vad_level", 2, int))),
         "ack_tone": _truthy(raw.get("ack_tone", True)),
+        "allowed_users": sorted(
+            {j.strip().lower() for j in _csv(raw.get("allowed_users", "")).split(",") if j.strip()}
+        ),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 
@@ -3105,7 +3117,7 @@ def _apply_yaml_config(yaml_cfg: dict, xmpp_cfg: dict) -> Optional[dict[str, Any
     for key in (
         "jid", "password", "host", "port", "direct_tls", "connect_timeout_secs",
         "muc_rooms", "muc_nick", "allowed_users", "muc_allowed_users", "allow_all_users", "max_message_length",
-        "voice_transcription", "voice_trusted_hosts", "calls",
+        "voice_transcription", "voice_trusted_hosts", "calls", "plaintext_peers",
     ):
         if key in raw and key not in extra:
             extra[key] = raw[key]

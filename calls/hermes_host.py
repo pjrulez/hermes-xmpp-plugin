@@ -81,13 +81,16 @@ class HermesCallHost:
     turn is pending for that chat. Progress messages and anything else go to the chat as usual.
     """
 
-    def __init__(self, adapter: Any) -> None:
+    def __init__(self, adapter: Any, callers: frozenset[str] = frozenset()) -> None:
         self.adapter = adapter
+        self.callers = callers  # who may call or be called; empty: every allowed user
         self.speech = HermesSpeech()
         self._pending: dict[str, _Turn] = {}
         self._count = 0
 
     def authorized(self, bare_jid: str) -> bool:
+        if self.callers and bare_jid.lower() not in self.callers:
+            return False  # e.g. a partner agent that may chat but must never phone
         return self.adapter._is_authorized(chat_type="dm", chat_id=bare_jid, user_jid=bare_jid)
 
     async def ask(self, peer: str, call_id: str, text: str) -> str:
