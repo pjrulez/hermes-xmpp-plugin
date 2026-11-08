@@ -311,7 +311,7 @@ class Conversation:
                 self._utterances.put_nowait(False)
                 return
             if not text or is_phantom(text, len(pcm) / STT_RATE):
-                logging.info("heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text)
+                logging.info("heard no words in a %.1fs utterance", len(pcm) / STT_RATE)
                 self._utterances.put_nowait(False)
                 return
             self._say_in_log("caller", text)
@@ -343,9 +343,7 @@ class Conversation:
                 assert pcm is not None
                 text = await retry(lambda: self.speech.transcribe(pcm))
                 if not text or is_phantom(text, len(pcm) / STT_RATE):
-                    logging.info(
-                        "heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text
-                    )
+                    logging.info("heard no words in a %.1fs utterance", len(pcm) / STT_RATE)
                     self._turn_pcm = None
                     return
                 self._say_in_log("caller", text)

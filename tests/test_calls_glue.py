@@ -248,7 +248,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
     assert out == {"success": True, "status": "connected: the call is up"}
     assert seen == [("user@example.org", "Your backup finished.", True,
-                     {"uninterruptible": True, "hang_up_after": False, "topic": "", "context": "", "attempts": None, "pause": None})]
+                     {"uninterruptible": True, "hang_up_after": False, "topic": "", "context": "", "attempts": 1, "pause": None})]
     assert adapter._calls_available() is True
 
 
@@ -645,3 +645,27 @@ def test_xmpp_message_tool_is_rate_limited(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
     assert all(r["success"] for r in results[:-1])
     assert results[-1]["success"] is False and "too many" in results[-1]["status"]
+
+
+def test_xmpp_call_tool_refuses_a_long_opening_and_limits_calls(monkeypatch):
+    a = make_adapter(allowed_users="user@example.org", calls={"enabled": True})
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+
+    class Controller:
+        async def place_call(self, *args, **kwargs):
+            return "connected: ok"
+
+    a._calls, a._calls_loop = Controller(), loop
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    try:
+        long = json.loads(adapter._xmpp_call_tool({"to": "user@example.org", "opening": "x" * 2000}))
+        assert not long["success"] and "too long" in long["status"]
+        results = [
+            json.loads(adapter._xmpp_call_tool({"to": "user@example.org", "opening": "hi"}))
+            for _ in range(adapter._CALL_TOOL_LIMIT + 1)
+        ]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert all(r["success"] for r in results[:-1])
+    assert not results[-1]["success"] and "too many calls" in results[-1]["status"]

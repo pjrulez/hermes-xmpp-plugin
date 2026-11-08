@@ -21,7 +21,8 @@ to land. It supports:
 - XEP-0461 threaded message replies
 - XEP-0444 message reactions (e.g., 👀/✅/❌ for processing status)
 - XEP-0447 stateless file sharing for voice messages
-- OMEMO end-to-end encryption (optional, needs slixmpp-omemo)
+- OMEMO end-to-end encryption (on by default when slixmpp-omemo is installed)
+- live audio calls with the agent, in both directions (optional, off by default)
 - cron and `send_message` delivery through a standalone sender hook
 - Hermes platform plugin registration via `ctx.register_platform(...)`
 
@@ -37,6 +38,17 @@ PR #3105 is credited for earlier XMPP/OMEMO exploration. See `ATTRIBUTION.md`
 for the full credit note. This repo exists because waiting is annoying, not
 because the packager wants credit for other people's work. Tiny open-source goblin
 energy, responsibly attributed.
+
+## Quick start
+
+1. Install the plugin and enable it (next section).
+2. Put `XMPP_JID`, `XMPP_PASSWORD` and `XMPP_ALLOWED_USERS` in the profile's `~/.hermes/.env`
+   (the bot account must already exist on your server).
+3. Restart the gateway, then message the bot from an allowed JID.
+4. Optional: `XMPP_HOME_CHANNEL=<your bare JID>` so cron jobs and `send_message` can reach you.
+5. Optional: audio calls, see [Calls quick start](#calls-quick-start); encryption, see
+   [OMEMO](#omemo-end-to-end-encryption-optional); several agents, see
+   [Multiple Hermes profiles](#multiple-hermes-profiles).
 
 ## Install
 
@@ -105,21 +117,61 @@ xmpp:
   home_channel: sam@example.org
 ```
 
-Env vars win when both are set.
+Set each value in one place. When both are set the adapter reads the `config.yaml` value first
+for most keys (`xmpp.*` is copied to the adapter; the env var is the fallback), and
+`config.yaml` only fills an env var that is not already set. Not every key has both forms; the
+table below lists them.
+
+### All settings
+
+JID lists accept a YAML list or a comma-separated string; write JIDs in lowercase (matching
+against `allowed_users` is case-sensitive). Booleans accept `1/true/yes/on` unless noted. In a
+multiplexed gateway read [Multiple Hermes profiles](#multiple-hermes-profiles).
+
+| `xmpp.` key | Env var | Default | What it does |
+|---|---|---|---|
+| `jid` | `XMPP_JID` | required | Bot account (bare JID). |
+| `password` | `XMPP_PASSWORD` | required | Bot password. Prefer `${XMPP_PASSWORD}` in YAML. |
+| `host` | `XMPP_HOST` | none (SRV / JID domain) | Server host override. |
+| `port` | `XMPP_PORT` | `5222` | Client port. |
+| `direct_tls` | `XMPP_DIRECT_TLS` | on only if port is `5223` | XEP-0368 TLS from byte one; STARTTLS stays the fallback. Plaintext is refused in every configuration. |
+| (env only) | `XMPP_USE_IPV6` | auto-detect | `true`/`false` forces IPv6 on/off; auto uses it only with a working global route. |
+| `connect_timeout_secs` | `XMPP_CONNECT_TIMEOUT_SECS` | `180` s | How long the background watchdog waits for the session. Invalid or ≤ 0 values are ignored. |
+| `max_message_length` | `XMPP_MAX_MESSAGE_LENGTH` | `10000` characters | Longer replies are split into several stanzas. |
+| `allowed_users` | `XMPP_ALLOWED_USERS` | empty (nobody) | Personal bare JIDs allowed to DM the bot. Also gates presence subscriptions. |
+| `allow_all_users` | `XMPP_ALLOW_ALL_USERS` | `false` | `true/1/yes` lets anyone DM. Never bypasses MUC authorization and does not make anyone callable. |
+| `muc_rooms` | `XMPP_MUC_ROOMS` | none | `room@conference.host[/nick]`, comma-separated. |
+| `muc_nick` | `XMPP_MUC_NICK` | `hermes` | Default nickname in rooms. |
+| `muc_allowed_users` | `XMPP_MUC_ALLOWED_USERS` | the value of `allowed_users` | Personal JIDs that may talk to the bot in a configured room. |
+| `home_channel` | `XMPP_HOME_CHANNEL` | none | Default JID or room for cron and `send_message` delivery. YAML may be a string or `{chat_id: ...}`. |
+| `omemo_enabled` / `omemo.enabled` | `XMPP_OMEMO_ENABLED` | `true` | OMEMO is used only when `slixmpp-omemo` and `omemo` are installed; if enabled but missing, a warning is logged and chat is plaintext over TLS. |
+| `omemo_storage_path` / `omemo.storage_path` | `XMPP_OMEMO_STORAGE_PATH` | `<profile home>/xmpp_omemo.json` | OMEMO key file. One file per profile. |
+| `plaintext_peers` | `XMPP_PLAINTEXT_PEERS` | none | Peers that get unencrypted messages (see OMEMO). |
+| `agent_peers` | `XMPP_AGENT_PEERS` | none | Partner agents (see Several agents). |
+| `disable_clarify_forms` | `XMPP_DISABLE_CLARIFY_FORMS` | `false` | Always use the numbered text clarify instead of XEP-0004 forms (`true/1/yes`). |
+| `voice_transcription` | `XMPP_VOICE_TRANSCRIPTION` | `true` | Transcribe inbound voice notes with the Hermes `stt` provider. |
+| `voice_trusted_hosts` | `XMPP_VOICE_TRUSTED_HOSTS` | the bot's domain and subdomains | Upload hosts allowed to resolve to private/LAN/tailnet addresses; `none` for no exceptions. |
+| (env only) | `XMPP_REACTIONS` | `true` | `false/0/no` turns off the 👀/✅/❌ reactions. |
+| `calls.*` | `XMPP_CALLS_ENABLED` | off | Audio calls; see [Call options](#call-options). |
+
+Env vars missing from `plugin.yaml`'s list: `XMPP_PLAINTEXT_PEERS`, `XMPP_AGENT_PEERS`,
+`XMPP_CALLS_ENABLED`, `XMPP_USE_IPV6`, `XMPP_REACTIONS`, `XMPP_DISABLE_CLARIFY_FORMS`.
 
 ## OMEMO end-to-end encryption (optional)
 
-Install the extra dependencies:
+OMEMO is **on by default** (`omemo_enabled` defaults to `true`) but only works when the extra
+packages are installed. `plugin.yaml` lists them, so a managed install brings them; otherwise:
 
 ```bash
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python slixmpp-omemo omemo
 ```
 
-Then set in `~/.hermes/.env`:
+Without them the adapter logs a warning and runs without OMEMO (TLS to the server only). To turn
+it off on purpose, set `XMPP_OMEMO_ENABLED=false`. Optional settings in `~/.hermes/.env`:
 
 ```env
 XMPP_OMEMO_ENABLED=true
-# Optional — defaults to ~/.hermes/xmpp_omemo.json
+# Optional — defaults to <profile home>/xmpp_omemo.json
 XMPP_OMEMO_STORAGE_PATH=/home/fastfinge/.hermes/xmpp_omemo.json
 ```
 
@@ -134,15 +186,20 @@ xmpp:
 On first connect, the adapter generates an OMEMO device key and publishes it to
 the server. This may take a few seconds — the adapter waits for initialization
 before sending encrypted messages. If the recipient hasn't published device keys
-yet, messages fall back to plaintext (with a log warning).
+yet, or encryption fails for any other reason, the message is sent **unencrypted** (with a log
+warning `OMEMO: encryption failed for ..., sending plaintext`). Inbound OMEMO messages that cannot
+be decrypted are dropped with a log warning.
 
 Before encrypting to a contact the adapter downloads their OMEMO device list (at most
 once per 10 minutes). Without this, a fresh account that has not yet heard from the contact
 fails with "NoEligibleDevices" even when presence is mutual.
 
 To skip OMEMO for specific peers, such as another agent on your own trusted server, set
-`xmpp.plaintext_peers` (or `XMPP_PLAINTEXT_PEERS`) to a list of bare JIDs. This lowers
-security for those peers only; it is off by default.
+`xmpp.plaintext_peers` (or `XMPP_PLAINTEXT_PEERS`) to a list of bare JIDs. Trade-off: everything
+sent *to* those peers (including call hand-offs, recaps and missed-call texts addressed to them)
+is readable by your server operator; what they send you is unaffected. No OMEMO sessions are
+created for them, which avoids stale-session breakage between two agents. Empty by default.
+Peers listed here are also never callable.
 
 **Keeping the keys safe.** The key file holds your private OMEMO identity and every session. The
 adapter protects it:
@@ -157,8 +214,8 @@ adapter protects it:
 
 Give each Hermes profile its own file (the default is `<profile home>/xmpp_omemo.json`).
 
-MUC OMEMO is supported when all participants have compatible devices, but group
-encryption reliability varies by client. 1:1 encryption is the primary use case.
+Only 1:1 (`chat`) messages are sent through OMEMO by the send path; treat rooms as visible to the
+server. 1:1 encryption is the primary use case.
 
 ## Multiple Hermes profiles
 
@@ -169,6 +226,20 @@ XMPP is nice for profile isolation because you can create one JID per profile:
 - `dad-hermes@example.org` for Dad's profile
 
 Each Hermes profile gets its own `.env`, memory, sessions, and gateway process.
+
+Rules for several profiles (or several agents) on one server:
+
+- **One XMPP account per profile.** Two adapters on the same JID are refused (`xmpp_lock`).
+- Each profile has its own `XMPP_JID`, `XMPP_PASSWORD`, `allowed_users` and OMEMO key file.
+- **Multiplexed gateway (`multiplex_profiles`, one process for several profiles):** put each
+  profile's `XMPP_*` values in that profile's own `.env`. An adapter never borrows the launch
+  profile's environment (it would otherwise bind the wrong JID), and the launch profile's `xmpp:`
+  block does not export env vars for the others. The `xmpp_call` and `xmpp_message` tools use the
+  adapter of the profile the agent runs in. Tests cover this for credentials only; verify the
+  call options per profile on your setup.
+- **Agents that talk to each other:** list each other in `allowed_users` **and** `agent_peers`;
+  see [Several agents, one operator](#several-agents-one-operator) for who may call whom and for
+  the cron hand-off.
 
 ## Server notes
 
@@ -183,6 +254,9 @@ Enable/configure in Prosody:
 - `muc` — group rooms
 - `http_file_share` — file upload (XEP-0363)
 - `mod_groups` — optional, for ad-hoc command roster
+
+For audio calls add a TURN service (`mod_turn_external` or `mod_external_services` plus coturn);
+see [Server requirements for calls](#server-requirements-for-calls). No Jingle module is needed.
 
 For ejabberd, enable MUC plus `mod_http_upload`. The new features (reactions,
 replies, markup) use standard XMPP stanzas and should work on any modern server
@@ -211,7 +285,12 @@ supporting XEP-0444, XEP-0461, and XEP-0394.
   it first, or use a separate bot account per gateway.
 - HTTP upload failure: enable XEP-0363 on the server and check max file size.
 - DM rejected: add your bare JID to `XMPP_ALLOWED_USERS`.
-- MUC silent: add room to `XMPP_MUC_ROOMS` and invite the bot.
+- MUC silent: add room to `XMPP_MUC_ROOMS`, invite the bot, and put the sender's personal JID in
+  `muc_allowed_users` (or `allowed_users`).
+- Replies arrive unencrypted although OMEMO is on: look for the `OMEMO: encryption failed ...
+  sending plaintext` warning; usually `NoEligibleDevices` (the contact has no published OMEMO
+  devices yet). Device lists are re-downloaded at most every 10 minutes.
+- Audio calls: see [Troubleshooting calls](#troubleshooting-calls).
 
 ## Features in depth
 
@@ -270,8 +349,7 @@ SFS reference is sent. The same upload URL is included in the body and XEP-0066
 OOB fallback, with a whole-body XEP-0428 marker. Clients can preview metadata or
 use the compatible download reference. The SFS metadata and file hash are kept.
 
-Voice calls (Jingle) are not yet supported because slixmpp does not include a
-Jingle RTP implementation.
+Live audio calls are a separate, optional feature: see [Audio calls](#audio-calls-jingle-rtp-optional).
 
 ### Inbound voice notes → speech-to-text
 
@@ -306,46 +384,72 @@ when transcription is disabled or a download fails. See
 
 Call the bot from Conversations, Dino or any client with audio calls and talk to the agent.
 Your speech is transcribed with the configured `stt` provider, the reply is a normal agent
-turn in your chat session (tools, memory and approvals apply), and it is spoken with the
-configured `tts` provider. This is turn-based speech, not full duplex: expect a few seconds of
-delay per turn, mostly the agent's own thinking time.
+turn (tools, memory and approvals apply), and it is spoken with the configured `tts`
+provider. The agent can also call you (see [The agent can call you](#the-agent-can-call-you)).
+This is turn-based speech, not full duplex: expect a few seconds of delay per turn, mostly the
+agent's own thinking time. Audio only; no video.
 
-**Enable it** (off by default). Install the extras into the Hermes environment
-(`uv pip install -r requirements-calls.txt`), or, to leave that environment untouched, into a
-`vendor/` folder next to `adapter.py` (`uv pip install --python <hermes python> --target vendor -r
-requirements-calls.txt`; the plugin adds it to the import path). Then add to `config.yaml`:
+#### Calls quick start
 
-```yaml
-xmpp:
-  calls:
-    enabled: true
-```
+1. **Dependencies** (aiortc, av, numpy, webrtcvad), either way:
+   - into the Hermes environment: `uv pip install --python ~/.hermes/hermes-agent/venv/bin/python -r requirements-calls.txt`
+     (run from the plugin folder);
+   - or, to leave that environment untouched, into a `vendor/` folder next to `adapter.py`:
+     `uv pip install --python <hermes python> --target vendor -r requirements-calls.txt`.
+     When calls are enabled the plugin appends `vendor/` to `sys.path` (after Hermes' own
+     packages, so those win). Use the Hermes Python so the wheels match its version and CPU;
+     `webrtcvad-wheels` needs a C compiler where no wheel exists.
+2. **Providers**: `stt` and `tts` must already work in Hermes (try a voice note and a TTS reply
+   first). The plugin calls them directly, so whatever they send to a cloud provider includes
+   call audio.
+3. **Config** (minimal; everything else has a default):
 
-Every option, with its default:
+   ```yaml
+   xmpp:
+     jid: hermes@example.org
+     password: ${XMPP_PASSWORD}
+     allowed_users: [sam@example.org]   # who may chat AND call
+     calls:
+       enabled: true                    # or XMPP_CALLS_ENABLED=true
+   ```
+4. **Server**: TURN reachable by clients and bot (see [Server requirements](#server-requirements-for-calls)).
+5. `hermes gateway restart`. The log must say `xmpp: audio calls enabled`. If it says
+   `calls are enabled but unavailable (...)`, a dependency is missing; chat keeps working.
+6. In your client, make sure the bot is a contact (the bot accepts subscription requests only
+   from `allowed_users` and subscribes back), then press the call button.
 
-| Option | Default | What it does |
+Calls are off by default; while off, no call code is imported.
+
+#### Call options
+
+All under `xmpp.calls` in `config.yaml`. Only `enabled` also has an env var. A bad value (not a
+number, etc.) logs `invalid calls.<key>` and uses the default; the adapter never fails to start
+because of it. Times are seconds unless noted.
+
+| Option | Type, default | What it does |
 |---|---|---|
-| `enabled` (`XMPP_CALLS_ENABLED`) | `false` | Master switch. Off: no call code is loaded. |
-| `max_seconds` | `600` | Hang up after this long, whoever is talking. |
-| `greeting` | `Hi, I'm here. What can I do for you?` | Spoken when you call the bot. `""` for silence. |
-| `silence_ms` | `800` | Pause that ends your turn. Raise it (1000-1500) if you get cut off while thinking; lower it for snappier answers. |
-| `vad_level` | `2` | Noise rejection, 0-3. Higher ignores more background noise but may miss soft speech. Steady hum, fans and hiss are ignored at every level. |
-| `ack_tone` | `true` | A short beep when your turn is captured, so you know it heard you finish. |
-| `idle_timeout` | `60` | Seconds without anyone speaking (and no reply playing or being worked on) before the agent says goodbye and hangs up. `0` turns it off. |
-| `log_transcripts` | `false` | Put what was said into the log. Off: the log only has how many words. Call audio is never written to disk. |
-| `hangup_grace` | `5` | Seconds you get to speak, after two falling warning beeps, before the agent hangs up (a goodbye, or `hang_up_after`). Speaking cancels the hang-up. `0` hangs up at once. |
-| `recap` | `true` | After a call in which you asked for something, the agent texts you one or two sentences saying what you asked and what it did about it (it is silent if you asked for nothing). |
-| `allowed_users` | all allowed users except `plaintext_peers` | Who may call, and be called by, the agent. Several people are fine; with more than one the `xmpp_call` tool needs `to`. List explicit JIDs to restrict it. |
-| `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
-| `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
-| `ring_timeout` | `60` | Outgoing calls: ring for up to this many seconds. Phones stop ringing by themselves after about half a minute; the plugin rings again until this time is up (a quick rejection is respected as a refusal). |
-| `ring_attempts` | `1` | Outgoing calls: how many times to ring before the message goes out as text. An urgent call can ask for more per call (`attempts`). |
-| `ring_pause` | `60` | Seconds between rings when there are several attempts. |
-| `busy_wait` | `90` | An outgoing call waits this long for the current call to end instead of failing as busy (a result can arrive just as a call ends). |
+| `enabled` (`XMPP_CALLS_ENABLED`) | bool, `false` | Master switch. The env var is used only when the YAML key is absent. Accepts `1/true/yes/on`. |
+| `allowed_users` | list or comma string, empty | Who may call, and be called by, the agent. Empty: every `xmpp.allowed_users` JID except `plaintext_peers` and `agent_peers`. Set: exactly these (they must also pass the normal chat authorization; a listed partner agent would be callable, so do not list one). With `allow_all_users: true` and this empty, nobody can call. Several people are fine; with more than one the `xmpp_call` tool needs `to`. Compared lowercase against the caller's bare JID. |
+| `max_seconds` | int, `600` | Hang up after this long, whoever is talking. |
+| `greeting` | string, `Hi, I'm here. What can I do for you?` | Spoken when someone calls the bot (incoming calls only; outgoing calls speak the `opening`). `""` for silence. |
+| `silence_ms` | int ms, `800` | Pause that ends your turn. Raise (1000-1500) if you get cut off while thinking; lower for snappier answers. |
+| `vad_level` | int 0-3, `2` | Noise rejection (WebRTC VAD). Higher ignores more background noise but may miss soft speech. Out-of-range values are clamped. Steady hum, fans and hiss are ignored at every level. |
+| `ack_tone` | bool, `true` | Short beep when your turn is captured. |
+| `idle_timeout` | float, `60` | Seconds without anyone speaking (and no reply playing or being worked on) before the agent says goodbye and hangs up. `0` turns it off. |
+| `hangup_grace` | float, `5` | Seconds you get to speak, after two falling beeps, before a planned hang-up (a goodbye, or `hang_up_after`). Speaking cancels it. `0` hangs up at once. Negative is treated as `0`. |
+| `barge_in` | `queue` \| `stop`, `queue` | `queue`: talking while the agent speaks cuts nothing off; what you say becomes the next turn (or is steered into the running turn, see below). `stop`: your voice cuts the agent off. Any other value means `queue`. |
+| `filler_after` | float, `3.0` | Seconds of waiting for the agent before it says "One moment." |
+| `recap` | bool, `true` | After a call in which you asked for something, the agent texts you one or two sentences saying what you asked and what it did (silent if you asked for nothing). |
+| `log_transcripts` | bool, `false` | Log what was said. Off: the log only has word counts. See [Privacy](#privacy). |
+| `ring_timeout` | int, `60` | Outgoing calls: ring for up to this long. Phones stop ringing by themselves after about half a minute; the plugin rings again until this time is up (a rejection within 25 s is respected as a refusal). The same limit applies separately to the device accepting and to audio connecting. |
+| `ring_attempts` | int ≥1, `1` | Outgoing calls: how many times to ring before the message goes out as text. The agent can ask for more per call (`attempts`, urgent only). |
+| `ring_pause` | float, `60` | Seconds between rings when there are several attempts. |
+| `busy_wait` | float, `90` | An outgoing call waits this long for the current call to end instead of failing as `busy`. |
 
-Rules: only JIDs in `allowed_users` can call or be called (partner agents, see below, never can); one call at a time (a second caller
-hears busy); DTLS-SRTP is required and Opus is the only codec. If the dependencies are not
-installed the plugin logs a warning and chat keeps working.
+Fixed, not configurable: one call at a time, DTLS-SRTP required, Opus the only codec,
+ICE-UDP the only transport.
+
+#### How a call behaves
 
 **Beeps.** Three short sounds tell you what the agent heard, without a word:
 
@@ -368,9 +472,10 @@ counts as speech; no frame-level detector can tell them apart from you.
 agent finishes its sentence, then answers everything you said as one message. If the agent is
 still working (a tool call, a search) when you speak, your words are sent to it as `/steer`, so
 it takes them in after its next tool call without restarting; if that is not possible they are
-queued. With `barge_in: stop` your voice cuts the agent off and its next turn is told how much
-you heard. Say goodbye and the agent ends the call. A reply that cannot be spoken (TTS down or
-busy, after retries) is posted to the chat as text instead.
+queued (the `/steer` path has not been verified against a live gateway). With `barge_in: stop`
+your voice cuts the agent off and its next turn is told how much you heard. Say goodbye and the
+agent ends the call. A reply that cannot be spoken (TTS down or busy, after retries) is posted
+to the chat as text instead.
 
 **Hanging up does not cancel what you asked.** If you hang up in the middle of a request, or the
 time limit ends the call, the plugin still transcribes what you were saying, lets the agent finish
@@ -380,51 +485,184 @@ understood and did.
 
 **Missed calls.** If you do not answer an agent's call (after `ring_attempts` rings), the opening is
 sent to your chat as text and remembered: when you call back, the agent knows what it wanted to
-tell you.
+tell you. The memory is in the gateway process only; a restart forgets it.
 
-**Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`, titled "Call from|to <person> <date time>", plus the `topic` the agent gave to `xmpp_call`, such as a cron job name), with the full
-history in your sessions list. The agent has all the tools of its profile in a call, including
-delegation and messaging; it is only asked to keep spoken replies short.
+**Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`, titled "Call from|to
+<person> <date time>", plus the `topic` the agent gave to `xmpp_call`, such as a cron job name),
+with the full history in your sessions list. The agent has all the tools of its profile in a
+call, including delegation and messaging; it is only asked to keep spoken replies short (one to
+three plain sentences). A spoken turn waits at most 180 s for the agent.
 
-**The agent can call you.** With calls enabled the plugin registers the `xmpp_call` tool
-(toolset `xmpp_calls`; enable that toolset for the gateway and for any cron job that should call):
+#### The agent can call you
+
+With calls enabled the plugin registers two tools in toolset `xmpp_calls`: `xmpp_call` and
+`xmpp_message`. Enable that toolset for the gateway and for any cron job that should call. Both
+exist only while the profile's XMPP adapter is connected with calls enabled (otherwise they
+report "calls are not enabled or XMPP is not connected"). They return JSON
+`{"success": bool, "status": "..."}`.
+
+`xmpp_call`:
 
 | Argument | What it does |
 |---|---|
 | `opening` | Required. What the agent says when you pick up: a greeting or a whole briefing in plain spoken sentences. It is synthesized while the phone rings, so there is no gap. |
 | `uninterruptible` | `true`: the opening is delivered in full, whatever you say meanwhile (your speech is ignored until it ends). Default `false`. |
-| `hang_up_after` | `true`: end the call when the opening is done. Default `false`: the conversation continues and the agent remembers what it said. |
-| `to` | Bare JID to call; optional when only one user is callable. |
-| `topic` | Short name of what the call is about, such as a cron job name; it ends up in the session title. If the call follows a `CALL REQUEST` message from a partner agent, the plugin takes `topic=` from it when the model leaves it out. |
-| `context` | Background the agent keeps for the call and never speaks (a reference and the steps to follow if you ask for a change). Taken from the same `CALL REQUEST` message when omitted. |
-| `attempts` | Urgent only: ring this many times (1-5) before the text fallback. Default 1. |
-| `pause_seconds` | Seconds between those rings. Default 60. |
-| | If the person is already on a call with you, the opening is spoken inside that call instead of ringing again. A call placed while another is running waits up to `busy_wait` seconds for the line. |
+| `hang_up_after` | `true`: end the call when the opening is done (after the `hangup_grace` beeps). Default `false`: the conversation continues and the agent remembers what it said. |
+| `to` | Bare JID to call; optional when only one user is callable. Must be callable (see `allowed_users`), else the tool lists who is. |
+| `topic` | Short name of what the call is about, such as a cron job name (60 characters max); it ends up in the session title. If the call follows a `CALL REQUEST` message from a partner agent, the plugin takes `topic=` from it when the model leaves it out. |
+| `context` | Background the agent keeps for the call and never speaks (a reference and the steps to follow if you ask for a change; 3000 characters max). Taken from the same `CALL REQUEST` message when omitted. |
+| `attempts` | Urgent only: ring this many times (1-5) before the text fallback. Default `ring_attempts`. |
+| `pause_seconds` | Seconds between those rings (0-3600). Default `ring_pause`. |
+
+Success means `status` starts with `connected`. Other statuses: `declined: the person rejected
+the call`, `no answer: ...` (both followed by "the message was sent as text instead"),
+`busy: another call is in progress`, `refused: <jid> is not allowed to be called`,
+`failed: ...` (the call was accepted but audio never connected, or an internal error). If the
+person is already on a call with you, the opening is spoken inside that call instead of ringing
+again. A call placed while another is running waits up to `busy_wait` seconds for the line. The
+tool itself waits at most `ring_timeout` + 60 s: with `attempts` above 1 and a long `pause_seconds`
+it reports `call failed` and cancels the remaining rings after that. The call keeps running after
+the tool returns.
+
+`xmpp_message`: `to` (an allowed user or a partner agent) and `text`, sent through the running
+adapter (never a second process). Hermes has no general `send_message` tool for agents. At most
+10 messages per recipient per 10 minutes (then `too many messages to ...`).
 
 Example cron prompt ending: *"When the job is done, call me with xmpp_call: tell me the top
 options you considered, why you chose the one you published, and read me today's note.
 Use uninterruptible=true."* The tool returns whether the call connected, was declined or
 went unanswered, and the call then runs on its own after the job's turn ends.
 
-**Several agents, one operator.** Give each agent its own XMPP account and list the other agents
-under `xmpp.agent_peers` (bare JIDs, also `XMPP_AGENT_PEERS`). A partner agent may message the
-agent (it must also be in the allowed users) but can never call it or be called. Because two agents
-that answer each other never stop, messages from a partner are limited to 4 per 10 minutes, the
-gateway's own status lines (tool progress, "interrupting", the silence-marker warning) are never
-sent to or acted on from a partner, and the agent is told the sender is a machine.
+#### Several agents, one operator
 
-Hermes has no general `send_message` tool for agents, so the plugin adds `xmpp_message` (toolset
-`xmpp_calls`): `to` (an allowed user or a partner agent) and `text`, sent through the running
-adapter. It is how a phone agent hands a task to another agent. A typical split: a default agent
-runs a cron job and sends the phone agent a `CALL REQUEST` message (briefing, reference, steps for
-changes); the phone agent calls you, and if you ask for a change it sends the task back with
-`xmpp_message`; the other agent replies `RESULT: ...`, which the phone agent speaks, in the open
-call or by calling you again.
+Give each agent its own XMPP account and list the other agents under `xmpp.agent_peers` (bare
+JIDs, also `XMPP_AGENT_PEERS`). Rules:
 
-**Server requirements (Prosody).** `mod_turn_external` (or `mod_external_services`) with a
-reachable coturn so clients and the bot get STUN/TURN credentials (XEP-0215); TLS on c2s. Clients
-need Jingle RTP, ICE-UDP and DTLS support (Conversations, Dino and Monal advertise them). The
-bot publishes its own call features in its caps, so run it as a normal account.
+- A partner must **also** be in `allowed_users` (on both sides), or its messages and presence
+  requests are ignored.
+- A partner agent can message the agent but is never called and can never call (unless you put it
+  in `calls.allowed_users`, which you should not).
+- Because two agents that answer each other never stop, messages from a partner are limited to 4
+  per 10 minutes (the rest are dropped with a log warning). The gateway's own status lines (tool
+  progress, "interrupting", the silence-marker warning; lines starting with ⚡ Interrupting, ⚙, 📞,
+  ⏳, 💭, 🔧, ⏩, 🔄, 💾) are neither sent to nor acted on from a partner.
+- The agent is told the sender is a machine and to reply exactly `[SILENT]` when nothing needs doing.
+
+**Two-profile example** (a phone agent that talks to you and a worker that runs cron jobs; each
+profile has its own `.env`, JID and OMEMO key file):
+
+```yaml
+# phone profile: hermes-phone@example.org
+xmpp:
+  allowed_users: [sam@example.org, hermes-worker@example.org]
+  agent_peers: [hermes-worker@example.org]
+  calls: {enabled: true}                  # callable: sam only (the worker is excluded)
+
+# worker profile: hermes-worker@example.org
+xmpp:
+  allowed_users: [sam@example.org, hermes-phone@example.org]
+  agent_peers: [hermes-phone@example.org]
+  calls: {enabled: true}                  # needed only so the worker has xmpp_message
+```
+
+Which side may call: only a profile with `calls.enabled` can place calls, and only to a
+callable JID (people, not partners). The worker needs `calls.enabled` (and the call dependencies installed) only because the
+`xmpp_message` tool is available only together with the call tools; nobody has to call the worker.
+Add `plaintext_peers` for the partner only if OMEMO between the agents gets in the way (see
+[OMEMO](#omemo-end-to-end-encryption-optional)).
+
+**Hand-off pattern (cron job → phone agent → you).** A convention between two prompts; the
+plugin enforces only the steps marked *(Plugin)*.
+
+1. The worker's cron job finishes and sends the phone agent (`xmpp_message`, or cron delivery to
+   the phone agent's JID) a message that **starts with** `CALL REQUEST`. Optional
+   `topic=<word>` on that first line (letters, digits, `.`, `:`, `-`, `_`), then free text
+   (reference, steps for requested changes), then a line `BRIEFING:` followed by what to say.
+2. *(Plugin)* The phone agent's adapter remembers `topic` and the text before `BRIEFING:` as
+   context for 10 minutes (the latest request only), so `xmpp_call` fills in `topic` and
+   `context` when the model forgets them. The message is still delivered to the agent as an
+   ordinary machine message.
+3. The phone agent calls you with `xmpp_call`. If you ask for a change, it sends the task back
+   with `xmpp_message`.
+4. The worker replies `RESULT: ...` (plain text; the plugin does not parse it). The phone agent
+   speaks it in the open call, or calls you again.
+
+*(Plugin)* The 4-per-10-minutes partner limit applies to every step; keep exchanges short.
+
+#### Server requirements for calls
+
+| Need | Why |
+|---|---|
+| `mod_turn_external` (or `mod_external_services`, XEP-0215) with a coturn reachable by the clients **and** the bot | Clients and the bot get short-lived TURN credentials. The bot asks its own server (10 s timeout); on no answer it continues with no ICE servers, i.e. direct paths only. It uses only `turn:` services over UDP; `turns:`, TCP-only entries and STUN are ignored. |
+| TLS on c2s | Already required for chat. |
+| Presence subscription between the person and the bot | The bot accepts subscriptions only from `allowed_users` and subscribes back. Conversations shows the call button only for mutual contacts. |
+| `mod_carbons`, `mod_smacks`, `mod_csi_simple`, `mod_cloud_notify` | Reliable delivery and wake-up of mobile clients (call proposals reach all devices). Present on the reference server. |
+| No Jingle module | Jingle is carried as ordinary stanzas. The bot advertises its call features in its entity caps (XEP-0115), so run it as a normal account. |
+
+The server's ports for TURN (UDP 3478 and coturn's relay range) must be reachable from the
+phone and from the bot's host; on a Tailscale network that is an ACL matter (see
+[Troubleshooting](#troubleshooting-calls)). Public-Internet deployments are untested.
+
+#### Client compatibility
+
+| Client | Status |
+|---|---|
+| Dino (Linux) | Incoming and outgoing calls tested with the bot. Sends no RTP while muted (handled). Silently skips a resource that does not advertise Jingle RTP; the bot advertises it after login. |
+| Conversations (Android) | Incoming and outgoing calls tested with the bot. Needs mutual presence for the call button. |
+| Monal (iOS) | Calls between people work on the reference server; a bot call with Monal has not been recorded as verified. |
+| Others (Gajim, etc.) | Untested. The bot speaks Jingle Message Initiation (XEP-0353) and Jingle RTP with ICE-UDP, DTLS-SRTP and Opus; a client offering those may work, none of the others has been tried. |
+
+#### Privacy
+
+- **Audio** is never kept. It is held in memory and, per utterance, written to a temporary file
+  for STT (and TTS output to a temporary file for decoding) that is deleted right after. It goes
+  to whatever your `stt`/`tts` providers send it to (a cloud provider sees it).
+- **Log**: by default only word counts, plus call ids, end reasons and RTP packet counts.
+  `log_transcripts: true` puts both sides' full text in the log at INFO level. Exception: when
+  a clip yields no words, the log line `heard no words ...` shows the (empty or stock-phrase)
+  transcript.
+- **Sessions**: every call is a Hermes session with its full text history, regardless of
+  `log_transcripts`. Delete it from your sessions list if you do not want it kept.
+- **Chat**: the recap, a missed call's full `opening` (which can be a whole briefing), and a reply
+  that could not be spoken are sent to your chat as text. They are OMEMO-encrypted unless OMEMO is
+  off or the recipient is a `plaintext_peers` entry. Set `recap: false` to skip recaps.
+- **Signalling** (who calls whom, when) is ordinary XMPP, not OMEMO. Media is DTLS-SRTP (an offer
+  without a DTLS fingerprint is refused), so a TURN relay sees only encrypted packets.
+- The `xmpp_call` / `xmpp_message` tools can reach only `allowed_users` (and, for messages, `agent_peers`).
+
+#### Limits
+
+| What | Limit |
+|---|---|
+| Concurrent calls | 1 per adapter (a second caller hears busy) |
+| Call length | `max_seconds` (600) |
+| Spoken turn | waits at most 180 s for the agent |
+| Partner agent → this agent | 4 messages / 10 min |
+| `xmpp_message` | 10 / recipient / 10 min |
+| `xmpp_call` | 6 calls / hour; `opening` at most 1500 chars; `attempts` 1-5, `pause_seconds` 0-3600, `topic` 60 chars, `context` 3000 chars; the tool waits for the whole ring schedule plus the connect time |
+| Call that never connects | ended after 40 s; a call whose ICE/DTLS fails mid-call is ended at once |
+| Remote ICE candidates | UDP to a public/private unicast address, port 1024-65535, at most 16 per call; loopback, link-local, multicast and host names are ignored. Values that carry whitespace or control characters are refused |
+| Codec / transport | Opus, ICE-UDP, DTLS-SRTP only; audio only |
+
+#### Troubleshooting calls
+
+First look in the gateway log. Lines to know: `xmpp: audio calls enabled`, `calls: ending <id> (<reason>)`,
+`calls: <id> rtp received/sent (r, s)` (every 10 s), `calls: refusing call ...`, `media state ...`.
+
+| Symptom | Likely cause and fix |
+|---|---|
+| **No call button / no ring on the person's phone (agent calls out)** | Tool says `calls are not enabled or XMPP is not connected`: calls off, dependencies missing (see the `unavailable` log line) or gateway not connected. `cannot call X; callable people: ...`: X not callable (not in `allowed_users`, is a partner agent, or not in `calls.allowed_users`). `no answer: nobody picked up in time`: no device answered the proposal within `ring_timeout` (client offline, bot not a mutual contact, or a client without call support; Dino skips resources that do not advertise Jingle RTP). |
+| **Bot ignores an incoming call** (rings out, no reply) | Caller is not callable. Unauthorized calls get no answer at all. Check `allowed_users`, `calls.allowed_users`, that the caller is not in `agent_peers` or `plaintext_peers`, and that `allow_all_users` is not your only list (it does not make anyone callable). |
+| **"Busy"** | One call at a time. A second incoming call is rejected/terminated with `busy`; an outgoing call waits `busy_wait` s, then returns `busy: another call is in progress`. A stuck call ends at `idle_timeout` or `max_seconds`. |
+| **Call rings on the phone but is rejected / drops at once** | Log says `calls: refusing call ...`: the offer had no DTLS fingerprint (`security-error`), no Opus or no audio (`unsupported-applications`), or the offer was malformed (`general-error`). Use a client with DTLS-SRTP and Opus. On outgoing calls, `declined: the person rejected the call` means the person (or a quick phone timeout, under 25 s) rejected it. |
+| **Connects but one-way audio or silence** | Read the `rtp received/sent` log lines. `received` 0: the person's audio does not reach the bot; `sent` growing but the person hears nothing: their path from the bot is blocked. Almost always ICE/TURN reachability: see the next row. If both counters grow and you hear nothing, it is a TTS/playback issue (below). |
+| **`failed: the call was accepted but audio never connected` / DTLS timeout** | ICE or DTLS never completed within `ring_timeout`. On a Tailscale network, ACLs often allow TCP 5222 but not UDP: allow UDP 3478 and coturn's relay port range between the phone, the bot host and the coturn host (and UDP between peers if you rely on direct paths). Confirm the server really advertises a UDP `turn:` service (the bot ignores `turns:`, TCP and STUN). Give the phone a path to the relay (not battery-restricted, same tailnet). |
+| **Voice reply silent, or text appears in chat instead** | TTS failed (`speech synthesis failed; sending the rest as text`): fix the `tts` provider. Nothing in chat either and `TTS also failed; staying silent`: provider down. The agent answered `[SILENT]`/empty: the host nudges once, then says nothing; check the model/prompt. Empty `greeting` is silent by design. |
+| **STT empty: agent never answers, or "heard no words"** | `heard no words in a N s utterance`: noise, a stock phrase dropped as a phantom, or STT returned nothing. `transcription failed` / `STT failed:` : the `stt` provider is not configured or erroring. Lower `vad_level`, raise `silence_ms`, or check the microphone (Dino sends nothing while muted). |
+| **Cut off mid-sentence / hears background noise** | Raise `silence_ms` (1000-1500) / raise `vad_level`. |
+| **Hangs up by itself** | `idle_timeout` (60 s of quiet), `max_seconds` (600), or the agent said goodbye (two falling beeps, then `hangup_grace`). |
+| **Agent has no `xmpp_call` tool** | Enable toolset `xmpp_calls` for the gateway/cron job; the tools appear only while the adapter is connected with calls enabled. |
+| **OMEMO `NoEligibleDevices` on recap / missed-call text** | The bot has no device list for the person. Open the person's OMEMO-capable client once and have them send a message; the bot re-downloads device lists at most every 10 minutes. Note the fallback: after an encryption failure the bot sends that text **unencrypted** and logs `OMEMO: encryption failed for ..., sending plaintext`. |
 
 ### Ad-hoc commands (XEP-0050)
 

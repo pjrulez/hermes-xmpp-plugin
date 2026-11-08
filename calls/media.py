@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
@@ -10,8 +10,14 @@ from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamTrack
 from aiortc.sdp import candidate_from_sdp as rtc_candidate
 
-from .jingle.model import Candidate, Content, Jingle
-from .jingle.sdp import answer_to_content, candidate_to_sdp, offer_to_sdp
+from .jingle.model import Candidate, Content, Jingle, UnsupportedError
+from .jingle.sdp import (
+    MAX_CANDIDATES,
+    acceptable_candidate,
+    answer_to_content,
+    candidate_to_sdp,
+    offer_to_sdp,
+)
 
 Transform = Callable[[MediaStreamTrack], MediaStreamTrack]
 
@@ -48,12 +54,16 @@ class CallMedia:
         self._transceiver: Any = None
         self._late: _LateTrack | None = None
         self.connected = asyncio.Event()
+        self.on_lost: Callable[[], Awaitable[None]] | None = None  # ICE/DTLS failed or closed
+        self._trickled = 0
         self.pc.on("connectionstatechange", self._on_state)
 
     async def _on_state(self) -> None:
         logging.info("media state %s", self.pc.connectionState)
         if self.pc.connectionState == "connected":
             self.connected.set()
+        elif self.pc.connectionState in ("failed", "closed") and self.on_lost is not None:
+            await self.on_lost()
 
     async def answer(self, offer: Jingle) -> Content:
         """Apply the offer and return the content for `session-accept`."""
@@ -61,6 +71,8 @@ class CallMedia:
         offered = next(c for c in offer.contents if c.media == "audio")
         self._mid = offered.name
         await self.pc.setRemoteDescription(RTCSessionDescription(text, "offer"))
+        if len(self.pc.getTransceivers()) != 1:  # one audio line, whatever the offer smuggles in
+            raise UnsupportedError("offer must have exactly one audio section")
         for transceiver in self.pc.getTransceivers():
             self.pc.addTrack(self._make_outgoing(transceiver.receiver.track))
         await self.pc.setLocalDescription(await self.pc.createAnswer())
@@ -88,8 +100,11 @@ class CallMedia:
 
     async def add_candidate(self, candidate: Candidate) -> None:
         """Trickled remote candidate. Waits for the answer; ignores RTCP component 2 (rtcp-mux)."""
-        await self._ready.wait()
-        if candidate.component != 1:
+        await asyncio.wait_for(self._ready.wait(), 30)
+        self._trickled += 1
+        if candidate.component != 1 or not acceptable_candidate(candidate):
+            return
+        if self._trickled > MAX_CANDIDATES:
             return
         parsed = rtc_candidate(candidate_to_sdp(candidate))
         parsed.sdpMid, parsed.sdpMLineIndex = self._mid, 0

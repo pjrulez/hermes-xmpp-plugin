@@ -38,6 +38,7 @@ RECAP_PROMPT = (
     "asked for or wanted changed during the call and what you did about it. If they asked for "
     "nothing, reply exactly NONE.]"
 )
+CONNECT_LIMIT = 40.0  # a call whose media is not up after this long is dead
 IDLE_GOODBYE = "I do not hear anyone, so I am hanging up. Call me back any time."
 CLIENT_RING_LIMIT = 25.0  # a "reject" after ringing this long is the phone timing out
 MIN_RERING = 5.0  # do not ring again with less than this left of the ring time
@@ -100,6 +101,10 @@ class Call:
         self.accepted = asyncio.Event()  # outgoing: the peer sent session-accept
 
 
+def _bare(jid: str) -> str:
+    return jid.split("/", 1)[0].lower()
+
+
 class Ringing:
     """An outgoing call proposed and not yet answered."""
 
@@ -114,6 +119,7 @@ class CallController:
         self.calls: dict[str, Call] = {}
         self._ringing: dict[str, Ringing] = {}
         self._background: set[asyncio.Task[None]] = set()
+        self._starting = 0  # incoming calls being set up: they already hold the line
         self._missed: dict[str, str] = {}  # peer -> text sent instead of a call nobody answered
 
     # ---- wiring -------------------------------------------------------------------------
@@ -152,8 +158,8 @@ class CallController:
         try:
             child = next((c for c in stanza.xml if c.tag.startswith(f"{{{JMI}}}")), None)
             peer = stanza["from"]
-            if child is None or not self.host.authorized(peer.bare):
-                return
+            if child is None or stanza["type"] == "error" or not self.host.authorized(peer.bare):
+                return  # an error is a bounce of our own propose, not a call for us
             verb, proposal_id = child.tag.rsplit("}", 1)[1], child.get("id", "")
             if verb == "propose":
                 self._answer_proposal(peer, proposal_id)
@@ -177,7 +183,7 @@ class CallController:
         ringing.answer.set_result(str(peer) if verb == "proceed" else None)
 
     def _busy(self) -> bool:
-        return len(self.calls) + len(self._ringing) >= self.config.max_calls
+        return len(self.calls) + len(self._ringing) + self._starting >= self.config.max_calls
 
     def _jmi(self, to: Any, verb: str, proposal_id: str, *, propose: bool = False) -> None:
         message = self.client.make_message(mto=to, mtype="chat")
@@ -203,20 +209,27 @@ class CallController:
             await self.handle(str(stanza["from"]), wire.parse(element))
         except JingleError as error:
             logging.warning("calls: refusing call %s: %s", sid, error)
-            await self.end(sid, error.reason, notify=str(stanza["from"]))
+            await self._fail(sid, stanza, error.reason)
         except IllegalTransition as error:
             logging.warning("calls: illegal transition on %s: %s", sid, error)
         except Exception:
             logging.exception("calls: call %s failed", sid)
-            await self.end(sid, "general-error", notify=str(stanza["from"]))
+            await self._fail(sid, stanza, "general-error")
+
+    async def _fail(self, sid: str, stanza: Any, reason: str) -> None:
+        """End the call this stanza was about, but never somebody else's call with the same sid."""
+        call = self.calls.get(sid)
+        sender = str(stanza["from"])
+        if call is None or _bare(call.peer) == _bare(sender):
+            await self.end(sid, reason, notify=sender)
 
     async def handle(self, peer: str, jingle: Jingle) -> None:
         if jingle.action == "session-initiate":
             await self._incoming(peer, jingle)
             return
         call = self.calls.get(jingle.sid)
-        if call is None:
-            return
+        if call is None or _bare(call.peer) != _bare(peer):
+            return  # unknown sid, or somebody else's call
         if jingle.action == "session-info":
             return self._session_info(call, jingle)
         call.session.apply(jingle.action, sent_by_us=False)
@@ -238,6 +251,15 @@ class CallController:
         if self._busy():
             await self.end(jingle.sid, "busy", notify=peer)
             return
+        if jingle.sid in self.calls:
+            return  # a repeated sid never replaces or ends the call that has it
+        self._starting += 1  # claim the line before the first await
+        try:
+            await self._start_incoming(peer, jingle)
+        finally:
+            self._starting -= 1
+
+    async def _start_incoming(self, peer: str, jingle: Jingle) -> None:
         session = Session(jingle.sid, we_initiated=False)
         session.apply("session-initiate", sent_by_us=False)
         bare = peer.split("/", 1)[0]
@@ -247,6 +269,7 @@ class CallController:
         self._name(jingle.sid, bare, "from")
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[jingle.sid] = Call(peer, session, media, convo)
+        media.on_lost = lambda: self.end(jingle.sid, "connectivity-error", notify=True)
         content = await media.answer(jingle)
         session.apply("session-accept", sent_by_us=True)
         accept = Jingle("session-accept", jingle.sid, contents=(content,), group=jingle.group)
@@ -386,6 +409,10 @@ class CallController:
                     return await self._offer(
                         full, proposal, opening, uninterruptible, hang_up_after, topic, context
                     )
+                except asyncio.CancelledError:  # the agent tool gave up: leave nothing ringing
+                    self._jmi(peer, "retract", proposal)
+                    await self.end(proposal, "cancelled", notify=True)
+                    raise
                 except Exception as error:
                     logging.exception("calls: outgoing call to %s failed", peer)
                     await self.end(proposal, "general-error", notify=True)
@@ -410,6 +437,7 @@ class CallController:
         convo.remember(opening, context)
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[sid] = Call(full, session, media, convo)
+        media.on_lost = lambda: self.end(sid, "connectivity-error", notify=True)
         convo.prepare(opening)  # synthesized while the phone rings
         content = await media.offer()
         session.apply("session-initiate", sent_by_us=True)
@@ -465,12 +493,16 @@ class CallController:
     async def _limit(self, sid: str) -> None:
         """Enforce the call time limit; meanwhile log RTP counts every 10 s (is audio flowing?)."""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.max_seconds
+        started = loop.time()
+        deadline = started + self.config.max_seconds
         while (left := deadline - loop.time()) > 0:
             await asyncio.sleep(min(10, left))
             call = self.calls.get(sid)
             if call is not None:
                 logging.info("calls: %s rtp received/sent %s", sid[:8], await call.media.packets())
+                if not call.media.connected.is_set() and loop.time() - started > CONNECT_LIMIT:
+                    logging.info("calls: %s never connected, ending", sid[:8])
+                    break
                 if self.config.idle_timeout and call.convo.idle_for() > self.config.idle_timeout:
                     logging.info("calls: %s idle, hanging up", sid[:8])
                     await call.convo.say(IDLE_GOODBYE)

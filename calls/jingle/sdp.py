@@ -5,6 +5,9 @@ Scope is one audio m-line, Opus only, DTLS-SRTP only, rtcp-mux. The legacy SDES
 (Dino offers speex/PCMU/PCMA and SDES; Conversations offers red and telephone-event).
 """
 
+import ipaddress
+import re
+
 from .model import (
     Candidate,
     Content,
@@ -31,33 +34,65 @@ def offer_to_sdp(offer: Jingle) -> str:
         raise UnsupportedError("offer has no Opus payload")
     lines = ["v=0", "o=- 1 2 IN IP4 127.0.0.1", "s=-", "t=0 0"]
     if offer.group:
-        lines.append("a=group:BUNDLE " + " ".join(offer.group))
+        lines.append("a=group:BUNDLE " + " ".join(map(_safe, offer.group)))
     lines += [
         f"m=audio 9 UDP/TLS/RTP/SAVPF {opus.id}",
         "c=IN IP4 0.0.0.0",
         "a=rtcp:9 IN IP4 0.0.0.0",
-        f"a=ice-ufrag:{transport.ufrag}",
-        f"a=ice-pwd:{transport.pwd}",
-        f"a=fingerprint:{transport.fingerprint.hash} {transport.fingerprint.value}",
-        f"a=setup:{transport.fingerprint.setup}",
-        f"a=mid:{content.name}",
+        f"a=ice-ufrag:{_safe(transport.ufrag)}",
+        f"a=ice-pwd:{_safe(transport.pwd)}",
+        f"a=fingerprint:{_safe(transport.fingerprint.hash)} {_safe(transport.fingerprint.value)}",
+        f"a=setup:{_safe(transport.fingerprint.setup)}",
+        f"a=mid:{_safe(content.name)}",
         "a=sendrecv",
         "a=rtcp-mux",
-        f"a=rtpmap:{opus.id} opus/{opus.clockrate}/{opus.channels}",
+        f"a=rtpmap:{_safe(opus.id)} opus/{_safe(opus.clockrate)}/{_safe(opus.channels)}",
     ]
     if opus.parameters:
-        lines.append(f"a=fmtp:{opus.id} " + ";".join(f"{k}={v}" for k, v in opus.parameters))
+        lines.append(
+            f"a=fmtp:{_safe(opus.id)} "
+            + ";".join(f"{_safe(k)}={_safe(v)}" for k, v in opus.parameters)
+        )
     lines += [
-        f"a=candidate:{candidate_to_sdp(c)}" for c in transport.candidates if c.component == 1
+        f"a=candidate:{candidate_to_sdp(c)}"
+        for c in transport.candidates[:MAX_CANDIDATES]
+        if c.component == 1 and acceptable_candidate(c)
     ]
     return "\r\n".join(lines) + "\r\n"
 
 
+_SAFE = re.compile(r"[\w+/:=.,;-]*")
+MAX_CANDIDATES = 16  # per call: a peer cannot make us probe thousands of addresses
+
+
+def _safe(value: object) -> str:
+    """A value for an SDP line must have no whitespace or control characters: XML character
+    references can smuggle a newline, and with it a whole extra line, into an attribute."""
+    text = str(value)
+    if not _SAFE.fullmatch(text):
+        raise JingleError(f"unsafe character in {text[:40]!r}")
+    return text
+
+
+def acceptable_candidate(c: Candidate) -> bool:
+    """Only UDP to a real unicast address on an unprivileged port: a peer must not aim our
+    connectivity checks at localhost, link-local (cloud metadata), multicast or hostnames."""
+    try:
+        ip = ipaddress.ip_address(c.ip)
+    except ValueError:
+        return False
+    bad = (
+        ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved
+    )
+    return c.protocol == "udp" and not bad and 1024 <= c.port <= 65535
+
+
 def candidate_to_sdp(c: Candidate) -> str:
     """The value after `a=candidate:` (also the string for a trickled candidate)."""
-    line = f"{c.foundation} {c.component} {c.protocol} {c.priority} {c.ip} {c.port} typ {c.type}"
+    fields = (c.foundation, c.component, c.protocol, c.priority, c.ip, c.port, c.type)
+    line = "{} {} {} {} {} {} typ {}".format(*map(_safe, fields))
     if c.rel_addr is not None and c.rel_port is not None:
-        line += f" raddr {c.rel_addr} rport {c.rel_port}"
+        line += f" raddr {_safe(c.rel_addr)} rport {_safe(c.rel_port)}"
     return line
 
 

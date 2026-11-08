@@ -197,7 +197,8 @@ class HermesCallHost:
             logging.exception("calls: titling the call session failed")
 
     async def post_text(self, peer: str, text: str) -> None:
-        await self.adapter.send(chat_id=peer, content=text)  # no turn is pending: not captured
+        # The sentinel reply_to keeps this out of a call turn that is being captured for speech.
+        await self.adapter.send(chat_id=peer, content=text, reply_to="xmpp-calls-text")
 
     def capture(self, chat_id: str, content: str, reply_to: str | None) -> bool:
         """Called from the adapter's send(). True means the text was taken for speech."""

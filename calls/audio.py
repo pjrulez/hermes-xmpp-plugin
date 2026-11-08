@@ -199,8 +199,11 @@ class PlaybackTrack(MediaStreamTrack):
     def busy(self) -> bool:
         return len(self._buf) > 0
 
-    async def wait_idle(self) -> None:
-        while self.busy:  # noqa: ASYNC110  recv() drains the buffer, no event to wait on
+    async def wait_idle(self, limit: float = 60.0) -> None:
+        """Wait until everything queued has been sent. recv() drains the buffer, so a call whose
+        media died never drains: give up after `limit` seconds instead of waiting forever."""
+        deadline = time.monotonic() + limit
+        while self.busy and time.monotonic() < deadline:  # noqa: ASYNC110  no event to wait on
             await asyncio.sleep(FRAME_MS / 1000)
 
     async def recv(self) -> av.AudioFrame:

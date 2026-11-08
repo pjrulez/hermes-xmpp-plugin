@@ -61,6 +61,7 @@ import mimetypes
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -450,6 +451,8 @@ def _find_omemo_plugin(client: Any) -> Any:
 
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
 _MESSAGE_TOOL_LIMIT = 10  # xmpp_message sends per recipient per 10 minutes
+_CALL_TOOL_LIMIT = 6  # xmpp_call placements per hour
+_OPENING_LIMIT = 1500  # characters an agent may speak when it places a call
 # Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
 # sends as chat; answering them would keep two agents talking forever.
 _NOTICE_PREFIXES = ("⚡ Interrupting", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄", "💾")
@@ -675,6 +678,8 @@ class XmppAdapter(BasePlatformAdapter):
         )
         self._agent_peer_times: Dict[str, List[float]] = {}
         self._message_tool_times: Dict[str, List[float]] = {}
+        self._call_tool_times: List[float] = []
+        self._call_tool_lock = threading.Lock()
         self._call_request: tuple = (-1e9, "", "")  # (when, topic, context) of the last CALL REQUEST
         self._plaintext_peers: frozenset = frozenset(
             self._bare(j.strip()).lower()
@@ -1497,12 +1502,11 @@ class XmppAdapter(BasePlatformAdapter):
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
                 return
             if user_id.lower() in self._agent_peers:
-                self._note_call_request(stanza["body"] or "")
-            if user_id.lower() in self._agent_peers and (
-                _is_gateway_notice(stanza["body"])
-                or not self._agent_peer_may_speak(user_id.lower())
-            ):
-                return
+                if _is_gateway_notice(stanza["body"]) or not self._agent_peer_may_speak(
+                    user_id.lower()
+                ):
+                    return
+                self._note_call_request(stanza["body"] or "")  # only what passed the loop guard
             if chat_type == "dm":
                 self._known_dms.add(from_bare)
 
@@ -3067,11 +3071,12 @@ def _xmpp_message_tool(args: dict, **_kw: Any) -> str:
         return result(False, "text is required")
     if to not in known:
         return result(False, f"cannot message {to or '(nobody)'}; allowed: " + ", ".join(sorted(known)))
-    now = time.monotonic()
-    recent = [t for t in adapter_._message_tool_times.get(to, []) if now - t < 600]
-    if len(recent) >= _MESSAGE_TOOL_LIMIT:  # a confused agent must not flood a person or a peer
-        return result(False, f"too many messages to {to} in the last 10 minutes")
-    adapter_._message_tool_times[to] = recent + [now]
+    with adapter_._call_tool_lock:
+        now = time.monotonic()
+        recent = [t for t in adapter_._message_tool_times.get(to, []) if now - t < 600]
+        if len(recent) >= _MESSAGE_TOOL_LIMIT:  # a confused agent must not flood a person or a peer
+            return result(False, f"too many messages to {to} in the last 10 minutes")
+        adapter_._message_tool_times[to] = recent + [now]
     # A reply_to keeps this out of the spoken reply of a call turn (see the call host's capture()).
     future = asyncio.run_coroutine_threadsafe(
         adapter_.send(chat_id=to, content=text, reply_to="xmpp-message-tool"), adapter_._calls_loop
@@ -3127,9 +3132,21 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             return result(False, "cannot place a call from the XMPP event loop thread")
     except RuntimeError:
         pass  # no loop in this thread: the normal worker-thread case
+    if len(opening) > _OPENING_LIMIT:
+        return result(False, f"the opening is too long ({len(opening)} characters; at most {_OPENING_LIMIT})")
+    with adapter_._call_tool_lock:  # a runaway agent must not ring a person all day
+        now = time.monotonic()
+        recent = [t for t in adapter_._call_tool_times if now - t < 3600]
+        if len(recent) >= _CALL_TOOL_LIMIT:
+            return result(False, f"too many calls placed in the last hour (limit {_CALL_TOOL_LIMIT})")
+        adapter_._call_tool_times = recent + [now]
+    tries = _bounded_int(args.get("attempts"), 1, 5) or adapter_._calls_cfg["ring_attempts"]
+    pause = _bounded_float(args.get("pause_seconds"), 0.0, 3600.0)
     asked_at, request_topic, request_context = adapter_._call_request
     if time.monotonic() - asked_at > 600:  # only a request that is still fresh
         request_topic = request_context = ""
+    elif not args.get("topic") or not args.get("context"):
+        adapter_._call_request = (0.0, "", "")  # used once: it does not leak into later calls
     future = asyncio.run_coroutine_threadsafe(adapter_._calls.place_call(
             target,
             opening,
@@ -3137,12 +3154,14 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             hang_up_after=_truthy(args.get("hang_up_after")),
             topic=str(args.get("topic") or request_topic)[:60],
             context=str(args.get("context") or request_context)[:3000],
-            attempts=_bounded_int(args.get("attempts"), 1, 5),
-            pause=_bounded_float(args.get("pause_seconds"), 0.0, 3600.0),
+            attempts=tries,
+            pause=pause,
         ),
         adapter_._calls_loop,)
+    cfg = adapter_._calls_cfg
+    patience = tries * (cfg["ring_timeout"] + (pause if pause is not None else cfg["ring_pause"]))
     try:
-        status = future.result(timeout=adapter_._calls_cfg["ring_timeout"] + 60)
+        status = future.result(timeout=patience + 2 * cfg["ring_timeout"] + 30)
     except Exception as exc:
         future.cancel()
         return result(False, f"call failed: {exc}")
