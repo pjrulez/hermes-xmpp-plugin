@@ -69,7 +69,7 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 60,
-        "recap": True, "busy_wait": 90.0, "ring_attempts": 1, "ring_pause": 60.0, "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
+        "recap": True, "idle_timeout": 180.0, "log_transcripts": False, "busy_wait": 90.0, "ring_attempts": 1, "ring_pause": 60.0, "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
     }
 
 
@@ -627,3 +627,21 @@ def test_world_readable_key_file_is_locked_down(tmp_path):
     path.chmod(0o644)
     adapter._StorageImpl(path)
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_xmpp_message_tool_is_rate_limited(monkeypatch):
+    a = make_adapter(allowed_users="user@example.org", agent_peers=["agent@example.org"], calls={"enabled": True})
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+
+    async def send(chat_id, content, reply_to=None, **kw):
+        return types.SimpleNamespace(success=True, error=None)
+
+    a.send, a._calls_loop = send, loop
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    try:
+        results = [json.loads(adapter._xmpp_message_tool({"to": "user@example.org", "text": str(i)})) for i in range(adapter._MESSAGE_TOOL_LIMIT + 1)]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    assert all(r["success"] for r in results[:-1])
+    assert results[-1]["success"] is False and "too many" in results[-1]["status"]

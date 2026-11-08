@@ -449,6 +449,7 @@ def _find_omemo_plugin(client: Any) -> Any:
 # ----------------------------------------------------------------
 
 _AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
+_MESSAGE_TOOL_LIMIT = 10  # xmpp_message sends per recipient per 10 minutes
 # Gateway status lines ("⚡ Interrupting...", "⚙️ tool_search...") the other agent's gateway
 # sends as chat; answering them would keep two agents talking forever.
 _NOTICE_PREFIXES = ("⚡ Interrupting", "⚙", "📞", "⏳", "💭", "🔧", "⏩", "🔄", "💾")
@@ -673,6 +674,7 @@ class XmppAdapter(BasePlatformAdapter):
             if j.strip()
         )
         self._agent_peer_times: Dict[str, List[float]] = {}
+        self._message_tool_times: Dict[str, List[float]] = {}
         self._call_request: tuple = (-1e9, "", "")  # (when, topic, context) of the last CALL REQUEST
         self._plaintext_peers: frozenset = frozenset(
             self._bare(j.strip()).lower()
@@ -953,6 +955,8 @@ class XmppAdapter(BasePlatformAdapter):
                 barge_in=self._calls_cfg["barge_in"],
                 hangup_grace=self._calls_cfg["hangup_grace"],
                 recap=self._calls_cfg["recap"],
+                idle_timeout=self._calls_cfg["idle_timeout"],
+                log_transcripts=self._calls_cfg["log_transcripts"],
                 busy_wait=self._calls_cfg["busy_wait"],
                 ring_attempts=self._calls_cfg["ring_attempts"],
                 ring_pause=self._calls_cfg["ring_pause"],
@@ -3063,6 +3067,11 @@ def _xmpp_message_tool(args: dict, **_kw: Any) -> str:
         return result(False, "text is required")
     if to not in known:
         return result(False, f"cannot message {to or '(nobody)'}; allowed: " + ", ".join(sorted(known)))
+    now = time.monotonic()
+    recent = [t for t in adapter_._message_tool_times.get(to, []) if now - t < 600]
+    if len(recent) >= _MESSAGE_TOOL_LIMIT:  # a confused agent must not flood a person or a peer
+        return result(False, f"too many messages to {to} in the last 10 minutes")
+    adapter_._message_tool_times[to] = recent + [now]
     # A reply_to keeps this out of the spoken reply of a call turn (see the call host's capture()).
     future = asyncio.run_coroutine_threadsafe(
         adapter_.send(chat_id=to, content=text, reply_to="xmpp-message-tool"), adapter_._calls_loop
@@ -3166,6 +3175,8 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         ),
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "recap": _truthy(raw.get("recap", True)),
+        "idle_timeout": max(0.0, number("idle_timeout", 180.0, float)),
+        "log_transcripts": _truthy(raw.get("log_transcripts", False)),
         "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
         "ring_attempts": max(1, number("ring_attempts", 1, int)),
         "ring_pause": max(0.0, number("ring_pause", 60.0, float)),

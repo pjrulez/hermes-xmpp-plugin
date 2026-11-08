@@ -4,6 +4,7 @@ one `Conversation` per call. Host-agnostic: the Hermes plugin and the dev bots b
 
 import asyncio
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,6 +38,7 @@ RECAP_PROMPT = (
     "asked for or wanted changed during the call and what you did about it. If they asked for "
     "nothing, reply exactly NONE.]"
 )
+IDLE_GOODBYE = "I do not hear anyone, so I am hanging up. Call me back any time."
 CLIENT_RING_LIMIT = 25.0  # a "reject" after ringing this long is the phone timing out
 MIN_RERING = 5.0  # do not ring again with less than this left of the ring time
 MISSED_CALL = "I tried to call you but nobody picked up. What I wanted to say:\n\n{opening}"
@@ -83,6 +85,8 @@ class CallConfig:
     ack_tone: bool = True  # short beep when an utterance is captured
     hangup_grace: float = 5.0  # warning beeps, then this long to speak before a planned hang-up
     busy_wait: float = 90.0  # outgoing calls wait this long for the current call to end
+    idle_timeout: float = 180.0  # nobody has spoken for this long: say goodbye and hang up (0: off)
+    log_transcripts: bool = False  # log what was said (default: only how many words)
     recap: bool = True  # after a call with talk in it, text the person what was asked and done
     barge_in: str = (
         "queue"  # "queue": talk any time, it becomes the next turn; "stop": cut the agent off
@@ -266,12 +270,15 @@ class CallController:
             fallback_text=lambda text: self.host.post_text(bare, text),
             barge_in=config.barge_in,
             hangup_grace=config.hangup_grace,
+            log_text=config.log_transcripts,
             steer=lambda text: self.host.steer(bare, sid, text),
         )
 
     def _name(self, sid: str, bare: str, direction: str, topic: str = "") -> None:
         """Title the call's session: "Call from|to <person> <YYYY-MM-DD HH:MM> [<topic>]"."""
         when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # One plain line: the title travels inside a /title command.
+        topic = " ".join(re.sub(r"[^\w .:@-]", " ", topic).split())[:60]
         title = f"Call {direction} {bare.split('@', 1)[0]} {when}" + (f" {topic}" if topic else "")
         task = asyncio.create_task(self.host.name_call(bare, sid, title))
         self._background.add(task)
@@ -464,6 +471,11 @@ class CallController:
             call = self.calls.get(sid)
             if call is not None:
                 logging.info("calls: %s rtp received/sent %s", sid[:8], await call.media.packets())
+                if self.config.idle_timeout and call.convo.idle_for() > self.config.idle_timeout:
+                    logging.info("calls: %s idle, hanging up", sid[:8])
+                    await call.convo.say(IDLE_GOODBYE)
+                    await call.convo.playback.wait_idle()
+                    break
         await self.end(sid, "success", notify=True)
 
     async def end(self, sid: str, reason: str | None, notify: str | bool = False) -> None:

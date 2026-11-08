@@ -79,6 +79,7 @@ class Conversation:
         fallback_text: Callable[[str], Awaitable[None]] | None = None,
         barge_in: str = "queue",
         hangup_grace: float = 5.0,
+        log_text: bool = False,
         steer: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         # "queue": the caller can talk while the agent talks; nothing is cut off and what they say
@@ -112,6 +113,8 @@ class Conversation:
         self._note = ""
         self.turns = 0  # caller turns the agent has answered
         self.closed = False  # the call is over: nothing is spoken, replies go out as text
+        self.log_text = log_text  # put what was said into the log (off: only its length)
+        self.last_active = time.monotonic()  # last speech either way, for the idle timeout
 
     def attach(self, incoming: MediaStreamTrack) -> MediaStreamTrack:
         """CallMedia hook: start listening to the caller, return the track we speak on."""
@@ -155,6 +158,7 @@ class Conversation:
         """Speak without a turn (greeting, outgoing-call opening). With `protected`, the caller
         cannot interrupt: their speech is ignored until `text` has been played in full."""
         self._protected = protected
+        self.touch()
         try:
             await self._speak(Turn(sentences(text), self.playback.played))
             if protected:
@@ -198,6 +202,20 @@ class Conversation:
             return
         for utterance in self._endpointer.flush():
             self._on_utterance(utterance.pcm)
+
+    def touch(self) -> None:
+        self.last_active = time.monotonic()
+
+    def idle_for(self) -> float:
+        """Seconds since anybody spoke; a reply that is still playing counts as activity."""
+        working = self._task is not None and not self._task.done()
+        return 0.0 if working or self.playback.busy else time.monotonic() - self.last_active
+
+    def _say_in_log(self, who: str, text: str) -> None:
+        if self.log_text:
+            logging.info("%s: %s", who, text)
+        else:
+            logging.info("%s: %d words", who, len(text.split()))
 
     async def finish(self, max_seconds: float = 180.0) -> None:
         """The call is over (the caller hung up, or time ran out). Hanging up does not cancel
@@ -243,6 +261,7 @@ class Conversation:
                     continue  # speaking a briefing: the caller's audio is read and dropped
                 for event in endpointer.feed(pcm):
                     if isinstance(event, SpeechHeld):
+                        self.touch()
                         self._spoke.set()
                         if self.barge_in == "stop":
                             self._barge_in()
@@ -295,7 +314,7 @@ class Conversation:
                 logging.info("heard no words in a %.1fs utterance (%r)", len(pcm) / STT_RATE, text)
                 self._utterances.put_nowait(False)
                 return
-            logging.info("caller: %s", text)
+            self._say_in_log("caller", text)
             self._utterances.put_nowait(True)
             if self._task is None or self._task.done():
                 self._start_text(text)
@@ -329,7 +348,7 @@ class Conversation:
                     )
                     self._turn_pcm = None
                     return
-                logging.info("caller: %s", text)
+                self._say_in_log("caller", text)
             else:
                 text = said
             t1 = time.monotonic()
@@ -338,7 +357,8 @@ class Conversation:
             self.turns += 1
             self._turn_pcm = None  # answered: what the caller says next is a new turn
             t2 = time.monotonic()
-            logging.info("agent: %s", reply)
+            self._say_in_log("agent", reply)
+            self.touch()
             if self.closed:  # they hung up: the answer still reaches them, as text
                 if reply and self.fallback_text is not None:
                     await self.fallback_text(reply)
