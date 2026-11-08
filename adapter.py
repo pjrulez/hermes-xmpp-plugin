@@ -405,6 +405,9 @@ def _find_omemo_plugin(client: Any) -> Any:
 # Adapter
 # ----------------------------------------------------------------
 
+_AGENT_PEER_LIMIT = 4  # messages per 10 minutes accepted from one partner agent
+
+
 class XmppAdapter(BasePlatformAdapter):
     """slixmpp-backed adapter satisfying BasePlatformAdapter."""
 
@@ -605,6 +608,12 @@ class XmppAdapter(BasePlatformAdapter):
         self._calls_loop: Optional[asyncio.AbstractEventLoop] = None  # loop that owns the calls
         self._calls_key = ""  # Hermes home this adapter registered its calls under
         self._omemo_refreshed: Dict[str, float] = {}  # peer -> monotonic time of last device list download
+        self._agent_peers: frozenset = frozenset(  # other agents: never called, rate-limited
+            self._bare(j.strip()).lower()
+            for j in _csv(extra.get("agent_peers", _scoped_getenv("XMPP_AGENT_PEERS", ""))).split(",")
+            if j.strip()
+        )
+        self._agent_peer_times: Dict[str, List[float]] = {}
         self._plaintext_peers: frozenset = frozenset(
             self._bare(j.strip()).lower()
             for j in _csv(extra.get("plaintext_peers", _scoped_getenv("XMPP_PLAINTEXT_PEERS", ""))).split(",")
@@ -902,6 +911,18 @@ class XmppAdapter(BasePlatformAdapter):
             )
             self._calls_host = None
             return None
+
+    def _agent_peer_may_speak(self, peer: str) -> bool:
+        """Loop guard: two agents that answer each other never stop. Accept at most
+        `_AGENT_PEER_LIMIT` messages per 10 minutes from a partner agent; drop the rest."""
+        now = time.monotonic()
+        recent = self._agent_peer_times.setdefault(peer, [])
+        recent[:] = [t for t in recent if now - t < 600]
+        if len(recent) >= _AGENT_PEER_LIMIT:
+            logger.warning("xmpp: dropping message from agent peer %s (over %d per 10 min)", peer, _AGENT_PEER_LIMIT)
+            return False
+        recent.append(now)
+        return True
 
     def _use_omemo(self, chat_id: str, mtype: str) -> bool:
         """Encrypt this outgoing message? Not to `plaintext_peers` (partner agents on the same
@@ -1395,6 +1416,8 @@ class XmppAdapter(BasePlatformAdapter):
                 chat_type, chat_id = "dm", from_bare
                 user_name, user_id = None, from_bare
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
+                return
+            if user_id.lower() in self._agent_peers and not self._agent_peer_may_speak(user_id.lower()):
                 return
             if chat_type == "dm":
                 self._known_dms.add(from_bare)
@@ -2912,6 +2935,8 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
     host = adapter_._calls_host
     allowed = sorted(host.callable_jids() if hasattr(host, "callable_jids") else adapter_.allowed_users)
     target = adapter_._bare(str(args.get("to") or "")) if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
+    if target and target.lower() not in allowed:
+        return result(False, f"cannot call {target}; callable people: " + ", ".join(allowed))
     if not target:
         return result(False, "say who to call with `to`; one of: " + ", ".join(allowed))
     try:
@@ -3143,7 +3168,7 @@ def _apply_yaml_config(yaml_cfg: dict, xmpp_cfg: dict) -> Optional[dict[str, Any
     for key in (
         "jid", "password", "host", "port", "direct_tls", "connect_timeout_secs",
         "muc_rooms", "muc_nick", "allowed_users", "muc_allowed_users", "allow_all_users", "max_message_length",
-        "voice_transcription", "voice_trusted_hosts", "calls", "plaintext_peers",
+        "voice_transcription", "voice_trusted_hosts", "calls", "plaintext_peers", "agent_peers",
     ):
         if key in raw and key not in extra:
             extra[key] = raw[key]

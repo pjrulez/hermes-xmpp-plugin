@@ -414,3 +414,29 @@ def test_omemo_device_lists_are_downloaded_once_per_ten_minutes():
 
     asyncio.run(run())
     assert calls == [(["user@example.org"], True), (["other@example.org"], True)]
+
+
+def test_partner_agent_messages_are_rate_limited(monkeypatch):
+    """Two agents answering each other must not loop forever."""
+    a = make_adapter(agent_peers=["Agent@Example.org"])
+    assert a._agent_peers == {"agent@example.org"}
+    assert all(a._agent_peer_may_speak("agent@example.org") for _ in range(adapter._AGENT_PEER_LIMIT))
+    assert not a._agent_peer_may_speak("agent@example.org")  # the next one is dropped
+    assert a._agent_peer_may_speak("other@example.org")  # others are untouched
+    real = adapter.time.monotonic
+    monkeypatch.setattr(adapter.time, "monotonic", lambda: real() + 601)
+    assert a._agent_peer_may_speak("agent@example.org")  # window passed
+
+
+def test_agent_peers_are_not_callable_and_the_tool_says_who_is(monkeypatch):
+    a = make_adapter(
+        allowed_users="user@example.org,agent@example.org",
+        agent_peers=["agent@example.org"],
+        calls={"enabled": True},
+    )
+    a._calls = a._build_calls(MagicMock())
+    a._calls_loop = object()
+    monkeypatch.setattr(adapter, "_CALL_ADAPTERS", {adapter._home_key(): a})
+    assert a._calls_host.callable_jids() == {"user@example.org"}
+    out = json.loads(adapter._xmpp_call_tool({"opening": "hi", "to": "agent@example.org"}))
+    assert out["success"] is False and "user@example.org" in out["status"]

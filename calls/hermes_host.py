@@ -98,7 +98,9 @@ class HermesCallHost:
         except the partner agents (`plaintext_peers`)."""
         if self.callers:
             return set(self.callers)
-        peers = getattr(self.adapter, "_plaintext_peers", frozenset())
+        peers = getattr(self.adapter, "_plaintext_peers", frozenset()) | getattr(
+            self.adapter, "_agent_peers", frozenset()
+        )
         return {j.lower() for j in self.adapter.allowed_users} - set(peers)
 
     async def ask(self, peer: str, call_id: str, text: str) -> str:
