@@ -144,6 +144,19 @@ To skip OMEMO for specific peers, such as another agent on your own trusted serv
 `xmpp.plaintext_peers` (or `XMPP_PLAINTEXT_PEERS`) to a list of bare JIDs. This lowers
 security for those peers only; it is off by default.
 
+**Keeping the keys safe.** The key file holds your private OMEMO identity and every session. The
+adapter protects it:
+
+- one process per key file: the file is locked while the gateway runs, and a second process that
+  opens the same file (a second gateway on the same home, a script) gets OMEMO switched off with a
+  log line instead of overwriting the sessions; the one-shot sender (`send_xmpp_message`, used by
+  `hermes send` and cron delivery from the CLI) never uses OMEMO for the same reason;
+- writes are atomic (temp file, fsync, rename) and the file is owner-only (`0600`);
+- a key file that cannot be read is never replaced by an empty one: OMEMO stays off and the log
+  says why. Restore a backup, or move the file away to start with a new identity.
+
+Give each Hermes profile its own file (the default is `<profile home>/xmpp_omemo.json`).
+
 MUC OMEMO is supported when all participants have compatible devices, but group
 encryption reliability varies by client. 1:1 encryption is the primary use case.
 
@@ -323,12 +336,12 @@ Every option, with its default:
 | `allowed_users` | all allowed users except `plaintext_peers` | Who may call, and be called by, the agent. Several people are fine; with more than one the `xmpp_call` tool needs `to`. List explicit JIDs to restrict it. |
 | `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
 | `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
-| `ring_timeout` | `45` | Outgoing calls: stop ringing after this many seconds. |
-| `ring_attempts` | `2` | Outgoing calls: how many times to ring before the message is sent as text. A phone that was only just free, or whose call screen missed the first ring, gets a second try. `1` rings once. |
-| `ring_pause` | `15` | Seconds between rings. |
+| `ring_timeout` | `60` | Outgoing calls: ring for up to this many seconds. Phones stop ringing by themselves after about half a minute; the plugin rings again until this time is up (a quick rejection is respected as a refusal). |
+| `ring_attempts` | `1` | Outgoing calls: how many times to ring before the message goes out as text. An urgent call can ask for more per call (`attempts`). |
+| `ring_pause` | `60` | Seconds between rings when there are several attempts. |
 | `busy_wait` | `90` | An outgoing call waits this long for the current call to end instead of failing as busy (a result can arrive just as a call ends). |
 
-Rules: only JIDs in `allowed_users` can call or be called; one call at a time (a second caller
+Rules: only JIDs in `allowed_users` can call or be called (partner agents, see below, never can); one call at a time (a second caller
 hears busy); DTLS-SRTP is required and Opus is the only codec. If the dependencies are not
 installed the plugin logs a warning and chat keeps working.
 
@@ -357,6 +370,16 @@ queued. With `barge_in: stop` your voice cuts the agent off and its next turn is
 you heard. Say goodbye and the agent ends the call. A reply that cannot be spoken (TTS down or
 busy, after retries) is posted to the chat as text instead.
 
+**Hanging up does not cancel what you asked.** If you hang up in the middle of a request, or the
+time limit ends the call, the plugin still transcribes what you were saying, lets the agent finish
+(tools included), and sends the answer to your chat as text. You can call back later and carry on.
+After every call in which you asked for something, the recap text tells you what the agent
+understood and did.
+
+**Missed calls.** If you do not answer an agent's call (after `ring_attempts` rings), the opening is
+sent to your chat as text and remembered: when you call back, the agent knows what it wanted to
+tell you.
+
 **Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`, titled "Call from|to <person> <date time>", plus the `topic` the agent gave to `xmpp_call`, such as a cron job name), with the full
 history in your sessions list. The agent has all the tools of its profile in a call, including
 delegation and messaging; it is only asked to keep spoken replies short.
@@ -369,12 +392,32 @@ delegation and messaging; it is only asked to keep spoken replies short.
 | `opening` | Required. What the agent says when you pick up: a greeting or a whole briefing in plain spoken sentences. It is synthesized while the phone rings, so there is no gap. |
 | `uninterruptible` | `true`: the opening is delivered in full, whatever you say meanwhile (your speech is ignored until it ends). Default `false`. |
 | `hang_up_after` | `true`: end the call when the opening is done. Default `false`: the conversation continues and the agent remembers what it said. |
-| `to` | Bare JID to call; optional when only one user is allowed. |
+| `to` | Bare JID to call; optional when only one user is callable. |
+| `topic` | Short name of what the call is about, such as a cron job name; it ends up in the session title. If the call follows a `CALL REQUEST` message from a partner agent, the plugin takes `topic=` from it when the model leaves it out. |
+| `context` | Background the agent keeps for the call and never speaks (a reference and the steps to follow if you ask for a change). Taken from the same `CALL REQUEST` message when omitted. |
+| `attempts` | Urgent only: ring this many times (1-5) before the text fallback. Default 1. |
+| `pause_seconds` | Seconds between those rings. Default 60. |
+| | If the person is already on a call with you, the opening is spoken inside that call instead of ringing again. A call placed while another is running waits up to `busy_wait` seconds for the line. |
 
 Example cron prompt ending: *"When the job is done, call me with xmpp_call: tell me the top
 options you considered, why you chose the one you published, and read me today's note.
 Use uninterruptible=true."* The tool returns whether the call connected, was declined or
 went unanswered, and the call then runs on its own after the job's turn ends.
+
+**Several agents, one operator.** Give each agent its own XMPP account and list the other agents
+under `xmpp.agent_peers` (bare JIDs, also `XMPP_AGENT_PEERS`). A partner agent may message the
+agent (it must also be in the allowed users) but can never call it or be called. Because two agents
+that answer each other never stop, messages from a partner are limited to 4 per 10 minutes, the
+gateway's own status lines (tool progress, "interrupting", the silence-marker warning) are never
+sent to or acted on from a partner, and the agent is told the sender is a machine.
+
+Hermes has no general `send_message` tool for agents, so the plugin adds `xmpp_message` (toolset
+`xmpp_calls`): `to` (an allowed user or a partner agent) and `text`, sent through the running
+adapter. It is how a phone agent hands a task to another agent. A typical split: a default agent
+runs a cron job and sends the phone agent a `CALL REQUEST` message (briefing, reference, steps for
+changes); the phone agent calls you, and if you ask for a change it sends the task back with
+`xmpp_message`; the other agent replies `RESULT: ...`, which the phone agent speaks, in the open
+call or by calling you again.
 
 **Server requirements (Prosody).** `mod_turn_external` (or `mod_external_services`) with a
 reachable coturn so clients and the bot get STUN/TURN credentials (XEP-0215); TLS on c2s. Clients

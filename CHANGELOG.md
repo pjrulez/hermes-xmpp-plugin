@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Audio calls (Jingle RTP, aiortc): incoming and outgoing, voice-activity turn taking with
+  beeps, queue/steer/stop barge-in, uninterruptible briefings, hang-up grace, per-call sessions
+  with titles, missed-call text and callback note, post-call recap, `xmpp_call` and `xmpp_message`
+  agent tools, `xmpp.agent_peers`, `xmpp.calls.*` options (see the README).
+- OMEMO key safety: file lock, atomic owner-only writes, no silent reset of an unreadable store;
+  the one-shot sender never uses OMEMO.
 - `xmpp.plaintext_peers`: bare JIDs that never get OMEMO-encrypted messages.
 - `xmpp.calls.allowed_users` and `xmpp.calls.hangup_grace` (warning beeps and a speaking
   window before a planned hang-up).
