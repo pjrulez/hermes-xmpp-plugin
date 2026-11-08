@@ -298,7 +298,10 @@ class Conversation:
                 time.monotonic() - t2,
             )
             await self.playback.wait_idle()
+            if hangup:
+                logging.info("hang-up requested: %.0fs to speak", self.hangup_grace)
             if hangup and not await self.grace(self.hangup_grace):
+                logging.info("nobody spoke: hanging up")
                 await self.on_hangup()
             elif self._queued:  # said while we were busy: that is the next turn
                 self._start_text(" ".join(self._queued))

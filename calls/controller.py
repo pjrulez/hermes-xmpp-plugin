@@ -435,6 +435,7 @@ class CallController:
     async def end(self, sid: str, reason: str | None, notify: str | bool = False) -> None:
         """Close one call; with `reason`, tell the peer (`notify`: its JID, or True)."""
         call = self.calls.pop(sid, None)
+        logging.info("calls: ending %s (%s)", sid[:8], reason)
         peer = notify if isinstance(notify, str) else (call.peer if call and notify else None)
         if call is not None:
             if self.config.recap and call.convo.turns:
