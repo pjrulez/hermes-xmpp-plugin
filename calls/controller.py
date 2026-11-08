@@ -314,8 +314,9 @@ class CallController:
         if not self.host.authorized(peer):
             return f"refused: {peer} is not allowed to be called"
         deadline = asyncio.get_running_loop().time() + self.config.busy_wait
+        # A result can arrive just as the previous call ends: queue behind it instead of failing.
         while self._busy() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.25)  # noqa: ASYNC110  (polls a plain dict; a result can arrive as a call ends)
+            await asyncio.sleep(0.25)  # noqa: ASYNC110
         if self._busy():
             return "busy: another call is in progress"
         proposal = str(uuid.uuid4())
