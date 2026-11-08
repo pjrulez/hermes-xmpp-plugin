@@ -111,6 +111,7 @@ class Conversation:
         self._turn: Turn | None = None
         self._note = ""
         self.turns = 0  # caller turns the agent has answered
+        self.closed = False  # the call is over: nothing is spoken, replies go out as text
 
     def attach(self, incoming: MediaStreamTrack) -> MediaStreamTrack:
         """CallMedia hook: start listening to the caller, return the track we speak on."""
@@ -197,6 +198,29 @@ class Conversation:
             return
         for utterance in self._endpointer.flush():
             self._on_utterance(utterance.pcm)
+
+    async def finish(self, max_seconds: float = 180.0) -> None:
+        """The call is over (the caller hung up, or time ran out). Hanging up does not cancel
+        what was asked: stop listening and speaking, but still transcribe what was being said,
+        let a running agent turn finish its work, and send its reply (and any queued speech's
+        reply) to the chat as text."""
+        self.closed = True
+        if self._listener:
+            self._listener.cancel()
+        if self._prep:
+            self._prep.cancel()
+        self.playback.flush()
+        for utterance in self._endpointer.flush():  # what they were saying as they hung up
+            self._on_utterance(utterance.pcm)
+        deadline = asyncio.get_running_loop().time() + max_seconds
+        while True:
+            running = set(self._background)
+            if self._task and not self._task.done() and self._task is not asyncio.current_task():
+                running.add(self._task)
+            left = deadline - asyncio.get_running_loop().time()
+            if not running or left <= 0:
+                return
+            await asyncio.wait(running, timeout=left)
 
     def stop(self) -> None:
         for task in (self._listener, self._task, self._prep):
@@ -315,14 +339,19 @@ class Conversation:
             self._turn_pcm = None  # answered: what the caller says next is a new turn
             t2 = time.monotonic()
             logging.info("agent: %s", reply)
-            await self._speak(Turn(sentences(reply), self.playback.played))
-            logging.info(
-                "timing stt=%.1fs agent=%.1fs first-audio=%.1fs",
-                t1 - t0,
-                t2 - t1,
-                time.monotonic() - t2,
-            )
-            await self.playback.wait_idle()
+            if self.closed:  # they hung up: the answer still reaches them, as text
+                if reply and self.fallback_text is not None:
+                    await self.fallback_text(reply)
+                hangup = False
+            else:
+                await self._speak(Turn(sentences(reply), self.playback.played))
+                logging.info(
+                    "timing stt=%.1fs agent=%.1fs first-audio=%.1fs",
+                    t1 - t0,
+                    t2 - t1,
+                    time.monotonic() - t2,
+                )
+                await self.playback.wait_idle()
             if hangup:
                 logging.info("hang-up requested: %.0fs to speak", self.hangup_grace)
             if hangup and not await self.grace(self.hangup_grace):
@@ -344,7 +373,7 @@ class Conversation:
         self._thinking = True
         try:
             done, _ = await asyncio.wait({reply}, timeout=self.filler_after)
-            if not done:
+            if not done and not self.closed:
                 if self._filler_audio is None:
                     self._filler_audio = await self._synth(FILLER)
                 self.playback.play(self._filler_audio)

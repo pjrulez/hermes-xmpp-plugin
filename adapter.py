@@ -3005,6 +3005,15 @@ _CALL_TOOL_SCHEMA = {
                 "description": "Background to keep for follow-up questions during the call (never "
                 "spoken), such as a reference and the steps to use when the person asks for a change.",
             },
+            "attempts": {
+                "type": "integer",
+                "description": "Only for urgent matters: how many times to ring before falling back to "
+                "text (default 1; at most 5). Each ring waits for the pause before the next.",
+            },
+            "pause_seconds": {
+                "type": "number",
+                "description": "Seconds between rings when attempts is above 1 (default 60).",
+            },
             "topic": {
                 "type": "string",
                 "description": "Short name of what the call is about (e.g. a cron job name). "
@@ -3071,6 +3080,20 @@ def _calls_available() -> bool:
     return adapter_ is not None and adapter_._calls is not None
 
 
+def _bounded_int(value: Any, low: int, high: int) -> Optional[int]:
+    try:
+        return min(high, max(low, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _bounded_float(value: Any, low: float, high: float) -> Optional[float]:
+    try:
+        return min(high, max(low, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
     """Agent tool: runs in a worker thread, so hand the call to the adapter's event loop."""
 
@@ -3105,6 +3128,8 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
             hang_up_after=_truthy(args.get("hang_up_after")),
             topic=str(args.get("topic") or request_topic)[:60],
             context=str(args.get("context") or request_context)[:3000],
+            attempts=_bounded_int(args.get("attempts"), 1, 5),
+            pause=_bounded_float(args.get("pause_seconds"), 0.0, 3600.0),
         ),
         adapter_._calls_loop,)
     try:
@@ -3132,7 +3157,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "max_seconds": number("max_seconds", 600, int),
         "greeting": str(raw.get("greeting", _CALL_GREETING)),
         "filler_after": number("filler_after", 3.0, float),
-        "ring_timeout": number("ring_timeout", 45, int),
+        "ring_timeout": number("ring_timeout", 60, int),
         "silence_ms": number("silence_ms", 800, int),
         "vad_level": min(3, max(0, number("vad_level", 2, int))),
         "ack_tone": _truthy(raw.get("ack_tone", True)),
@@ -3142,8 +3167,8 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "hangup_grace": max(0.0, number("hangup_grace", 5.0, float)),
         "recap": _truthy(raw.get("recap", True)),
         "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
-        "ring_attempts": max(1, number("ring_attempts", 2, int)),
-        "ring_pause": max(0.0, number("ring_pause", 15.0, float)),
+        "ring_attempts": max(1, number("ring_attempts", 1, int)),
+        "ring_pause": max(0.0, number("ring_pause", 60.0, float)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 

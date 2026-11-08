@@ -37,6 +37,8 @@ RECAP_PROMPT = (
     "asked for or wanted changed during the call and what you did about it. If they asked for "
     "nothing, reply exactly NONE.]"
 )
+CLIENT_RING_LIMIT = 25.0  # a "reject" after ringing this long is the phone timing out
+MIN_RERING = 5.0  # do not ring again with less than this left of the ring time
 MISSED_CALL = "I tried to call you but nobody picked up. What I wanted to say:\n\n{opening}"
 
 
@@ -71,9 +73,9 @@ class CallConfig:
     greeting: str = "Hi, I'm here. What can I do for you?"
     filler_after: float = 3.0
     max_calls: int = 1
-    ring_timeout: int = 45  # outgoing calls: seconds to wait for an answer
-    ring_attempts: int = 2  # rings before the message goes out as text
-    ring_pause: float = 15.0  # seconds between rings
+    ring_timeout: int = 60  # outgoing calls: seconds to ring before giving up
+    ring_attempts: int = 1  # rings before the message goes out as text (urgent calls: more)
+    ring_pause: float = 60.0  # seconds between rings
     silence_ms: int = 800  # this much non-speech ends the caller's turn
     vad_level: int = (
         2  # WebRTC VAD aggressiveness 0-3: higher rejects more noise, misses soft speech
@@ -275,6 +277,15 @@ class CallController:
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
+    async def _after_call(self, call: Call, sid: str) -> None:
+        """Hanging up cancels nothing the person asked: finish their last turn, then recap."""
+        try:
+            await call.convo.finish()
+        except Exception:
+            logging.exception("calls: finishing the last turn of %s failed", sid)
+        if self.config.recap and call.convo.turns:
+            await self._recap(call.peer.split("/", 1)[0], sid)
+
     async def _recap(self, bare: str, sid: str) -> None:
         """After the call: ask the call's own agent session what was asked, and text the answer."""
         try:
@@ -304,6 +315,8 @@ class CallController:
         hang_up_after: bool = False,
         topic: str = "",
         context: str = "",
+        attempts: int | None = None,
+        pause: float | None = None,
     ) -> str:
         """Call `peer` (bare JID) and, when answered, say `opening`. Returns a status sentence.
 
@@ -332,31 +345,46 @@ class CallController:
         if self._busy():
             return "busy: another call is in progress"
         outcome = ""
-        for attempt in range(max(1, self.config.ring_attempts)):
+        tries = max(1, attempts if attempts is not None else self.config.ring_attempts)
+        wait = self.config.ring_pause if pause is None else pause
+        loop = asyncio.get_running_loop()
+        for attempt in range(tries):
             if attempt:
-                await asyncio.sleep(self.config.ring_pause)  # the phone may only now be free
-            proposal = str(uuid.uuid4())
-            ringing = self._ringing[proposal] = Ringing(peer)
-            try:
-                self._jmi(peer, "propose", proposal, propose=True)
+                await asyncio.sleep(wait)  # the phone may only now be free
+            deadline = loop.time() + self.config.ring_timeout
+            while True:
+                proposal = str(uuid.uuid4())
+                ringing = self._ringing[proposal] = Ringing(peer)
+                asked = loop.time()
                 try:
-                    full = await asyncio.wait_for(ringing.answer, self.config.ring_timeout)
-                except TimeoutError:
-                    self._jmi(peer, "retract", proposal)
-                    outcome = "no answer: nobody picked up in time"
-                    continue
-                if full is None:
-                    outcome = "declined: the person rejected the call"
-                    continue
-                return await self._offer(
-                    full, proposal, opening, uninterruptible, hang_up_after, topic, context
-                )
-            except Exception as error:
-                logging.exception("calls: outgoing call to %s failed", peer)
-                await self.end(proposal, "general-error", notify=True)
-                return f"failed: {error}"
-            finally:
-                self._ringing.pop(proposal, None)
+                    self._jmi(peer, "propose", proposal, propose=True)
+                    try:
+                        full = await asyncio.wait_for(
+                            ringing.answer, max(0.0, deadline - loop.time())
+                        )
+                    except TimeoutError:
+                        self._jmi(peer, "retract", proposal)
+                        outcome = "no answer: nobody picked up in time"
+                        break
+                    if full is None:
+                        outcome = "declined: the person rejected the call"
+                        # A phone gives up ringing on its own after about half a minute: that
+                        # is not a refusal, so ring again until our own limit.
+                        if (
+                            loop.time() - asked >= CLIENT_RING_LIMIT
+                            and deadline - loop.time() > MIN_RERING
+                        ):
+                            continue
+                        break
+                    return await self._offer(
+                        full, proposal, opening, uninterruptible, hang_up_after, topic, context
+                    )
+                except Exception as error:
+                    logging.exception("calls: outgoing call to %s failed", peer)
+                    await self.end(proposal, "general-error", notify=True)
+                    return f"failed: {error}"
+                finally:
+                    self._ringing.pop(proposal, None)
         await self._missed_call(peer, opening)
         return f"{outcome}; the message was sent as text instead"
 
@@ -444,11 +472,9 @@ class CallController:
         logging.info("calls: ending %s (%s)", sid[:8], reason)
         peer = notify if isinstance(notify, str) else (call.peer if call and notify else None)
         if call is not None:
-            if self.config.recap and call.convo.turns:
-                task = asyncio.create_task(self._recap(call.peer.split("/", 1)[0], sid))
-                self._background.add(task)
-                task.add_done_callback(self._background.discard)
-            call.convo.stop()
+            task = asyncio.create_task(self._after_call(call, sid))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
             for task in call.tasks:
                 if task is not asyncio.current_task():
                     task.cancel()
