@@ -46,6 +46,10 @@ class Host(Protocol):
         """Send `text` to the peer's chat (a reply that could not be spoken)."""
         ...
 
+    async def steer(self, peer: str, call_id: str, text: str) -> bool:
+        """Give `text` to the agent turn already running for this call. False if not possible."""
+        ...
+
 
 @dataclass(frozen=True)
 class CallConfig:
@@ -59,6 +63,9 @@ class CallConfig:
         2  # WebRTC VAD aggressiveness 0-3: higher rejects more noise, misses soft speech
     )
     ack_tone: bool = True  # short beep when an utterance is captured
+    barge_in: str = (
+        "queue"  # "queue": talk any time, it becomes the next turn; "stop": cut the agent off
+    )
 
 
 class Call:
@@ -231,6 +238,8 @@ class CallController:
             ),
             ack_tone_enabled=config.ack_tone,
             fallback_text=lambda text: self.host.post_text(bare, text),
+            barge_in=config.barge_in,
+            steer=lambda text: self.host.steer(bare, sid, text),
         )
 
     # ---- outgoing calls ------------------------------------------------------------------
@@ -317,7 +326,11 @@ class CallController:
         uninterruptible: bool,
         hang_up_after: bool,
     ) -> None:
-        await convo.say(opening, protected=uninterruptible)
+        try:
+            await convo.say(opening, protected=uninterruptible)
+        except Exception:
+            logging.exception("calls: delivering the opening of %s failed", sid)
+            return
         if hang_up_after:
             await convo.playback.wait_idle()
             await self.end(sid, "success", notify=True)

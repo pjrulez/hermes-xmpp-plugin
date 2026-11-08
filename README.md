@@ -308,6 +308,7 @@ Every option, with its default:
 | `silence_ms` | `800` | Pause that ends your turn. Raise it (1000-1500) if you get cut off while thinking; lower it for snappier answers. |
 | `vad_level` | `2` | Noise rejection, 0-3. Higher ignores more background noise but may miss soft speech. Steady hum, fans and hiss are ignored at every level. |
 | `ack_tone` | `true` | A short beep when your turn is captured, so you know it heard you finish. |
+| `barge_in` | `queue` | What talking while the agent speaks does. `queue`: nothing is cut off; what you say becomes the next turn (or is steered into the agent's running turn, see below). `stop`: the agent stops talking the moment you speak. |
 | `filler_after` | `3.0` | Seconds of waiting for the agent before it says "One moment." |
 | `ring_timeout` | `45` | Outgoing calls: stop ringing after this many seconds. |
 
@@ -321,9 +322,17 @@ only paused to think and the agent has not replied yet, the two parts are joined
 Muting your microphone ends the turn at once. Another person talking in the background still
 counts as speech; no frame-level detector can tell them apart from you.
 
-**Interrupting.** Talk over the agent and it stops within a moment; its next turn is told how much of
-the reply you heard. Say goodbye and the agent ends the call. A reply that cannot be spoken
-(TTS down) is posted to the chat as text instead.
+**Talking while the agent talks.** With `barge_in: queue` (default) you may keep talking: the
+agent finishes its sentence, then answers everything you said as one message. If the agent is
+still working (a tool call, a search) when you speak, your words are sent to it as `/steer`, so
+it takes them in after its next tool call without restarting; if that is not possible they are
+queued. With `barge_in: stop` your voice cuts the agent off and its next turn is told how much
+you heard. Say goodbye and the agent ends the call. A reply that cannot be spoken (TTS down or
+busy, after retries) is posted to the chat as text instead.
+
+**Sessions.** Every call is its own Hermes session (a DM thread `call-<id>`), with the full
+history in your sessions list. The agent has all the tools of its profile in a call, including
+delegation and messaging; it is only asked to keep spoken replies short.
 
 **The agent can call you.** With calls enabled the plugin registers the `xmpp_call` tool
 (toolset `xmpp_calls`; enable that toolset for the gateway and for any cron job that should call):

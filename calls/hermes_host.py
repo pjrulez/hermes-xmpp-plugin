@@ -98,9 +98,7 @@ class HermesCallHost:
 
         self._count += 1
         turn = self._pending[peer] = _Turn(f"call-{call_id}-{self._count}")
-        source = self.adapter.build_source(
-            chat_id=peer, chat_type="dm", user_id=peer, user_name=None
-        )
+        source = self._source(peer, call_id)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
@@ -115,6 +113,37 @@ class HermesCallHost:
             if self._pending.get(peer) is turn:
                 del self._pending[peer]
 
+    def _source(self, peer: str, call_id: str) -> Any:
+        # A thread id gives every call its own Hermes session, listed with its full history.
+        return self.adapter.build_source(
+            chat_id=peer, chat_type="dm", user_id=peer, user_name=None, thread_id=f"call-{call_id}"
+        )
+
+    async def steer(self, peer: str, call_id: str, text: str) -> bool:
+        """Mid-turn speech goes to the running agent as `/steer`. Unverified against a live
+        gateway: any failure returns False and the speech is queued as the next turn."""
+        from gateway.platforms.base import (  # type: ignore[import-not-found]
+            MessageEvent,
+            MessageType,
+        )
+
+        if peer not in self._pending:
+            return False
+        try:
+            self._count += 1
+            await self.adapter.handle_message(
+                MessageEvent(
+                    text=f"/steer {text}",
+                    message_type=MessageType.TEXT,
+                    source=self._source(peer, call_id),
+                    message_id=f"call-steer-{call_id}-{self._count}",
+                )
+            )
+        except Exception:
+            logging.exception("calls: steer failed; queueing instead")
+            return False
+        return True
+
     async def post_text(self, peer: str, text: str) -> None:
         await self.adapter.send(chat_id=peer, content=text)  # no turn is pending: not captured
 
@@ -122,7 +151,7 @@ class HermesCallHost:
         """Called from the adapter's send(). True means the text was taken for speech."""
         turn = self._pending.get(chat_id)
         if turn is None or (reply_to and reply_to != turn.message_id):
-            return False
+            return False  # includes acknowledgements of a /steer: they stay text in the chat
         turn.parts.append(content)
         return True
 

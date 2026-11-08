@@ -866,6 +866,7 @@ class XmppAdapter(BasePlatformAdapter):
                 silence_ms=self._calls_cfg["silence_ms"],
                 vad_level=self._calls_cfg["vad_level"],
                 ack_tone=self._calls_cfg["ack_tone"],
+                barge_in=self._calls_cfg["barge_in"],
             )
             calls = controller.CallController(client, self._calls_host, config)
             calls.install()
@@ -2904,6 +2905,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "silence_ms": number("silence_ms", 800, int),
         "vad_level": min(3, max(0, number("vad_level", 2, int))),
         "ack_tone": _truthy(raw.get("ack_tone", True)),
+        "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }
 
 

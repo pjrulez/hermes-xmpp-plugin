@@ -68,7 +68,7 @@ def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
         "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 45,
-        "silence_ms": 800, "vad_level": 2, "ack_tone": True,
+        "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue",
     }
 
 
@@ -269,3 +269,42 @@ def test_register_adds_the_tool_and_survives_old_hermes():
     old.register_tool.side_effect = AttributeError
     adapter.register(old)
     assert old.register_platform.called
+
+
+def test_barge_in_setting():
+    assert adapter._calls_settings({"calls": {"barge_in": "STOP"}})["barge_in"] == "stop"
+    assert adapter._calls_settings({"calls": {"barge_in": "whatever"}})["barge_in"] == "queue"
+
+
+def test_every_call_gets_its_own_session_thread():
+    a = make_adapter(calls={"enabled": True})
+    a._build_calls(MagicMock())
+    source = a._calls_host._source("user@example.org", "sid42")
+    assert (source.chat_id, source.chat_type, source.thread_id) == ("user@example.org", "dm", "call-sid42")
+
+
+def test_steer_sends_a_steer_command_for_the_pending_turn(monkeypatch):
+    a = make_adapter(calls={"enabled": True})
+    a._build_calls(MagicMock())
+    monkeypatch.setitem(sys.modules, "gateway", MagicMock())
+    monkeypatch.setitem(sys.modules, "gateway.platforms", MagicMock())
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base", gw_base)
+    sent = []
+
+    async def handle(event):
+        sent.append(event)
+
+    a.handle_message = handle
+    host = a._calls_host
+
+    async def scenario():
+        refused = await host.steer("user@example.org", "sid", "also check email")
+        host._pending["user@example.org"] = types.SimpleNamespace(message_id="call-sid-1", parts=[])
+        return refused, await host.steer("user@example.org", "sid", "also check email")
+
+    refused, accepted = asyncio.run(scenario())
+    assert refused is False and accepted is True
+    assert sent[0].text == "/steer also check email"
+    assert sent[0].message_id.startswith("call-steer-")
+    assert sent[0].source.thread_id == "call-sid"
+    assert host.capture("user@example.org", "ack", sent[0].message_id) is False
