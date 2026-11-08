@@ -86,6 +86,7 @@ class HermesCallHost:
         self.callers = callers  # who may call or be called; empty: every allowed user
         self.speech = HermesSpeech()
         self._pending: dict[str, _Turn] = {}
+        self._silent: set[str] = set()  # message ids whose replies stay out of the chat
         self._count = 0
 
     def authorized(self, bare_jid: str) -> bool:
@@ -144,12 +145,14 @@ class HermesCallHost:
             return False
         try:
             self._count += 1
+            message_id = f"call-steer-{call_id}-{self._count}"
+            self._silent.add(message_id)
             await self.adapter.handle_message(
                 MessageEvent(
                     text=f"/steer {text}",
                     message_type=MessageType.TEXT,
                     source=self._source(peer, call_id),
-                    message_id=f"call-steer-{call_id}-{self._count}",
+                    message_id=message_id,
                 )
             )
         except Exception:
@@ -157,11 +160,36 @@ class HermesCallHost:
             return False
         return True
 
+    async def name_call(self, peer: str, call_id: str, title: str) -> None:
+        """Title the call's session with the built-in /title command; its acknowledgement is
+        not sent to the chat. Needs a live gateway: any failure is logged and ignored."""
+        from gateway.platforms.base import (  # type: ignore[import-not-found]
+            MessageEvent,
+            MessageType,
+        )
+
+        message_id = f"call-title-{call_id}"
+        self._silent.add(message_id)
+        try:
+            await self.adapter.handle_message(
+                MessageEvent(
+                    text=f"/title {title}",
+                    message_type=MessageType.COMMAND,
+                    source=self._source(peer, call_id),
+                    message_id=message_id,
+                )
+            )
+        except Exception:
+            logging.exception("calls: titling the call session failed")
+
     async def post_text(self, peer: str, text: str) -> None:
         await self.adapter.send(chat_id=peer, content=text)  # no turn is pending: not captured
 
     def capture(self, chat_id: str, content: str, reply_to: str | None) -> bool:
         """Called from the adapter's send(). True means the text was taken for speech."""
+        if reply_to in self._silent:
+            logging.info("calls: not sending %r to the chat (reply to %s)", content[:80], reply_to)
+            return True  # e.g. the acknowledgement of a /title or /steer
         turn = self._pending.get(chat_id)
         if turn is None or (reply_to and reply_to != turn.message_id):
             return False  # includes acknowledgements of a /steer: they stay text in the chat

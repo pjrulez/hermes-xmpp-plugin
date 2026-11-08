@@ -440,3 +440,12 @@ def test_agent_peers_are_not_callable_and_the_tool_says_who_is(monkeypatch):
     assert a._calls_host.callable_jids() == {"user@example.org"}
     out = json.loads(adapter._xmpp_call_tool({"opening": "hi", "to": "agent@example.org"}))
     assert out["success"] is False and "user@example.org" in out["status"]
+
+
+def test_acknowledgements_of_title_and_steer_stay_out_of_the_chat():
+    a = make_adapter(calls={"enabled": True})
+    a._build_calls(MagicMock())
+    host = a._calls_host
+    host._silent.add("call-title-abc")
+    assert host.capture("user@example.org", "Session title set", "call-title-abc") is True
+    assert host.capture("user@example.org", "Session title set", "other-id") is False  # normal chat

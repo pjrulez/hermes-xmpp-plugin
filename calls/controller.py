@@ -6,6 +6,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 from xml.etree import ElementTree as ET
 
@@ -30,6 +31,9 @@ CALL_FEATURES = (
 )
 
 
+MISSED_CALL = "I tried to call you but nobody picked up. What I wanted to say:\n\n{opening}"
+
+
 class Host(Protocol):
     """What the controller needs from whoever embeds it."""
 
@@ -48,6 +52,10 @@ class Host(Protocol):
 
     async def steer(self, peer: str, call_id: str, text: str) -> bool:
         """Give `text` to the agent turn already running for this call. False if not possible."""
+        ...
+
+    async def name_call(self, peer: str, call_id: str, title: str) -> None:
+        """Give the call's agent session a recognizable title. Never raises."""
         ...
 
 
@@ -89,6 +97,8 @@ class CallController:
         self.client, self.host, self.config = client, host, config or CallConfig()
         self.calls: dict[str, Call] = {}
         self._ringing: dict[str, Ringing] = {}
+        self._background: set[asyncio.Task[None]] = set()
+        self._missed: dict[str, str] = {}  # peer -> text sent instead of a call nobody answered
 
     # ---- wiring -------------------------------------------------------------------------
 
@@ -216,6 +226,9 @@ class CallController:
         session.apply("session-initiate", sent_by_us=False)
         bare = peer.split("/", 1)[0]
         convo = self._conversation(jingle.sid, bare)
+        if bare in self._missed:
+            convo.remember_missed(self._missed.pop(bare))
+        self._name(jingle.sid, bare, "from")
         media = CallMedia(await turn.fetch(self.client), make_outgoing=convo.attach)
         call = self.calls[jingle.sid] = Call(peer, session, media, convo)
         content = await media.answer(jingle)
@@ -243,6 +256,23 @@ class CallController:
             hangup_grace=config.hangup_grace,
             steer=lambda text: self.host.steer(bare, sid, text),
         )
+
+    def _name(self, sid: str, bare: str, direction: str) -> None:
+        """Title the call's session: "Call from|to <person> <YYYY-MM-DD HH:MM>"."""
+        when = datetime.now().strftime("%Y-%m-%d %H:%M")
+        title = f"Call {direction} {bare.split('@', 1)[0]} {when}"
+        task = asyncio.create_task(self.host.name_call(bare, sid, title))
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    async def _missed_call(self, peer: str, opening: str) -> None:
+        """Nobody answered: send the message as text and remember it for a call back."""
+        bare = peer.split("/", 1)[0]
+        self._missed[bare] = opening
+        try:
+            await self.host.post_text(bare, MISSED_CALL.format(opening=opening))
+        except Exception:
+            logging.exception("calls: sending the missed-call text failed")
 
     # ---- outgoing calls ------------------------------------------------------------------
 
@@ -274,9 +304,13 @@ class CallController:
                 full = await asyncio.wait_for(ringing.answer, self.config.ring_timeout)
             except TimeoutError:
                 self._jmi(peer, "retract", proposal)
-                return "no answer: nobody picked up in time"
+                await self._missed_call(peer, opening)
+                return "no answer: nobody picked up in time; the message was sent as text instead"
             if full is None:
-                return "declined: the person rejected the call"
+                await self._missed_call(peer, opening)
+                return (
+                    "declined: the person rejected the call; the message was sent as text instead"
+                )
             return await self._offer(full, proposal, opening, uninterruptible, hang_up_after)
         except Exception as error:
             logging.exception("calls: outgoing call to %s failed", peer)
@@ -308,12 +342,14 @@ class CallController:
             await asyncio.wait_for(call.accepted.wait(), self.config.ring_timeout)
         except TimeoutError:
             await self.end(sid, "timeout", notify=True)
-            return "no answer: the device never accepted the call"
+            await self._missed_call(full, opening)
+            return "no answer: the device never accepted the call; message sent as text instead"
         try:
             await asyncio.wait_for(media.connected.wait(), self.config.ring_timeout)
         except TimeoutError:
             await self.end(sid, "connectivity-error", notify=True)
             return "failed: the call was accepted but audio never connected"
+        self._name(sid, full.split("/", 1)[0], "to")
         call.tasks.append(asyncio.create_task(self._limit(sid)))
         call.tasks.append(
             asyncio.create_task(self._deliver(sid, convo, opening, uninterruptible, hang_up_after))

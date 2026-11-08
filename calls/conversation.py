@@ -132,6 +132,13 @@ class Conversation:
         """Tell the agent, on its next turn, what it said before the caller spoke."""
         self._note = f"[You placed this call and began by saying: {spoken}] "
 
+    def remember_missed(self, text: str) -> None:
+        """The caller is calling back after a call we placed that nobody answered."""
+        self._note = (
+            "[You tried to phone this person earlier and they did not answer, so you texted "
+            f"them this instead: {text}] "
+        )
+
     async def say(self, text: str, *, protected: bool = False) -> None:
         """Speak without a turn (greeting, outgoing-call opening). With `protected`, the caller
         cannot interrupt: their speech is ignored until `text` has been played in full."""
