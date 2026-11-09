@@ -51,7 +51,7 @@ def offer_to_sdp(offer: Jingle) -> str:
     if opus.parameters:
         lines.append(
             f"a=fmtp:{_safe(opus.id)} "
-            + ";".join(f"{_safe(k)}={_safe(v)}" for k, v in opus.parameters)
+            + ";".join(f"{_safe(k)}={_fmtp_value(v)}" for k, v in opus.parameters)
         )
     lines += [
         f"a=candidate:{candidate_to_sdp(c)}"
@@ -72,6 +72,12 @@ def _safe(value: object) -> str:
     if not _SAFE.fullmatch(text):
         raise JingleError(f"unsafe character in {text[:40]!r}")
     return text
+
+
+def _fmtp_value(value: object) -> str:
+    """Monal writes Opus flags as true/false; SDP and aiortc's parser want 1/0."""
+    text = _safe(value)
+    return {"true": "1", "false": "0"}.get(text.lower(), text)
 
 
 def acceptable_candidate(c: Candidate) -> bool:

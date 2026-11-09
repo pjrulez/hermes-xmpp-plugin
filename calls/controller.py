@@ -277,6 +277,18 @@ class CallController:
             len(set(self.calls) | set(self._pending) | set(self._ringing)) >= self.config.max_calls
         )
 
+    @staticmethod
+    def _send(iq: Any) -> None:
+        """Fire an IQ set without waiting; a sleeping phone that never answers is not an error."""
+
+        def done(future: Any) -> None:
+            if not future.cancelled() and (error := future.exception()) is not None:
+                logging.info("calls: no answer to our IQ: %s", type(error).__name__)
+
+        pending = iq.send()
+        if hasattr(pending, "add_done_callback"):  # the fake clients in tests send nothing
+            pending.add_done_callback(done)
+
     def _jmi(self, to: Any, verb: str, proposal_id: str, *, propose: bool = False) -> None:
         message = self.client.make_message(mto=to, mtype="chat")
         element = ET.SubElement(message.xml, f"{{{JMI}}}{verb}", id=proposal_id)
@@ -442,7 +454,7 @@ class CallController:
         self._pending.pop(jingle.sid, None)
         session.apply("session-accept", sent_by_us=True)
         accept = Jingle("session-accept", jingle.sid, contents=(content,), group=jingle.group)
-        self.client.make_iq_set(sub=wire.build(accept), ito=peer).send()
+        self._send(self.client.make_iq_set(sub=wire.build(accept), ito=peer))
         call.tasks += [
             asyncio.create_task(self._limit(jingle.sid)),
             asyncio.create_task(self._greet(call)),
@@ -677,7 +689,7 @@ class CallController:
             contents=(content,),
             group=(content.name,),
         )
-        self.client.make_iq_set(sub=wire.build(initiate), ito=full).send()
+        self._send(self.client.make_iq_set(sub=wire.build(initiate), ito=full))
         return call
 
     async def _deliver(
@@ -750,4 +762,4 @@ class CallController:
                 logging.exception("calls: closing media of %s failed", sid)
         if reason and peer:
             terminate = wire.build(Jingle("session-terminate", sid, reason=reason))
-            self.client.make_iq_set(sub=terminate, ito=peer).send()
+            self._send(self.client.make_iq_set(sub=terminate, ito=peer))
