@@ -213,6 +213,11 @@ adapter protects it:
   says why. Restore a backup, or move the file away to start with a new identity.
 
 Give each Hermes profile its own file (the default is `<profile home>/xmpp_omemo.json`).
+The lock survives in-process plugin reloads and remains held until process exit. Symlinked store
+paths update their resolved target without replacing the symlink. POSIX uses `flock`; Windows
+uses a nonblocking byte-range lock (covered by simulated tests, not native Windows acceptance).
+Do not configure independent adapters to share a store, even inside one process: they hold
+separate in-memory session snapshots.
 
 Only 1:1 (`chat`) messages are sent through OMEMO by the send path; treat rooms as visible to the
 server. 1:1 encryption is the primary use case.
@@ -423,8 +428,9 @@ Calls are off by default; while off, no call code is imported.
 #### Call options
 
 All under `xmpp.calls` in `config.yaml`. Only `enabled` also has an env var. A bad value (not a
-number, etc.) logs `invalid calls.<key>` and uses the default; the adapter never fails to start
-because of it. Times are seconds unless noted.
+number, NaN or infinity) logs `invalid calls.<key>` and uses the default. Numeric validation
+runs even with calls disabled and does not prevent chat startup. `max_seconds`, `ring_timeout`
+and `silence_ms` must be positive; `filler_after` cannot be negative. Times are seconds unless noted.
 
 | Option | Type, default | What it does |
 |---|---|---|
@@ -442,12 +448,20 @@ because of it. Times are seconds unless noted.
 | `recap` | bool, `true` | After a call in which you asked for something, the agent texts you one or two sentences saying what you asked and what it did (silent if you asked for nothing). |
 | `log_transcripts` | bool, `false` | Log what was said. Off: the log only has word counts. See [Privacy](#privacy). |
 | `ring_timeout` | int, `60` | Outgoing calls: ring for up to this long. Phones stop ringing by themselves after about half a minute; the plugin rings again until this time is up (a rejection within 25 s is respected as a refusal). The same limit applies separately to the device accepting and to audio connecting. |
-| `ring_attempts` | int ≥1, `1` | Outgoing calls: how many times to ring before the message goes out as text. The agent can ask for more per call (`attempts`, urgent only). |
+| `ring_attempts` | int 1-5, `1` | Outgoing calls: how many times to ring before the message goes out as text. Out-of-range values are clamped. The agent can ask for more per call (`attempts`, urgent only). |
 | `ring_pause` | float, `60` | Seconds between rings when there are several attempts. |
 | `busy_wait` | float, `90` | An outgoing call waits this long for the current call to end instead of failing as `busy`. |
 
 Fixed, not configurable: one call at a time, DTLS-SRTP required, Opus the only codec,
-ICE-UDP the only transport.
+ICE-UDP the only transport. Audio/video and multiple-content offers are refused; this plugin
+cannot negotiate video upgrades or ICE restarts. Unsupported Jingle actions get an IQ error.
+
+Ringing and setup stop when the controller disconnects; a late answer cannot start a new call.
+Retractions and duplicate JMI proposals are tracked for the last 256 proposal IDs in memory.
+Delayed proposals older than `ring_timeout` are ignored; the cache does not survive a restart.
+Received JMI carbons are accepted only from the account's own bare JID; sent and forged carbons
+are ignored. This requires the server/client carbon feature to be enabled. A standalone audio
+Jingle initiation without a preceding proposal is supported (Dino uses this path).
 
 #### How a call behaves
 
@@ -477,11 +491,19 @@ your voice cuts the agent off and its next turn is told how much you heard. Say 
 agent ends the call. A reply that cannot be spoken (TTS down or busy, after retries) is posted
 to the chat as text instead.
 
+Playback applies backpressure before synthesizing further sentences: about five seconds of
+queued audio plus the next atomic sentence. A very long sentence can exceed that target.
+Failure to synthesize the optional filler does not discard the agent's actual answer.
+
 **Hanging up does not cancel what you asked.** If you hang up in the middle of a request, or the
 time limit ends the call, the plugin still transcribes what you were saying, lets the agent finish
-(tools included), and sends the answer to your chat as text. You can call back later and carry on.
-After every call in which you asked for something, the recap text tells you what the agent
-understood and did.
+(tools included), and sends the answer to your chat as text. Already queued requests are processed
+too, including when a previous reply said goodbye or failed. This finishing work has a 180-second
+budget; remaining local tasks are cancelled afterward. Cancelling a task cannot undo completed
+tool actions or forcibly stop a provider thread. Late synthesis never adds audio to a closed call.
+You can call back later and follow up; each call has a separate session, with missed-call context
+only as described below. After a call with answered turns, the recap text tells you what the
+agent understood and did (unless `recap` is off or it returns `NONE`).
 
 **Missed calls.** If you do not answer an agent's call (after `ring_attempts` rings), the opening is
 sent to your chat as text and remembered: when you call back, the agent knows what it wanted to
@@ -517,12 +539,14 @@ report "calls are not enabled or XMPP is not connected"). They return JSON
 Success means `status` starts with `connected`. Other statuses: `declined: the person rejected
 the call`, `no answer: ...` (both followed by "the message was sent as text instead"),
 `busy: another call is in progress`, `refused: <jid> is not allowed to be called`,
-`failed: ...` (the call was accepted but audio never connected, or an internal error). If the
-person is already on a call with you, the opening is spoken inside that call instead of ringing
-again. A call placed while another is running waits up to `busy_wait` seconds for the line. The
-tool itself waits at most `ring_timeout` + 60 s: with `attempts` above 1 and a long `pause_seconds`
-it reports `call failed` and cancels the remaining rings after that. The call keeps running after
-the tool returns.
+`failed: ...` (the call was accepted but audio never connected, or an internal error),
+`terminated: <reason>` (the peer ended setup; returned promptly without a false timeout or
+missed-call text), and `closed: ...` (the controller disconnected). If the person is already on
+a call with you, the opening is spoken inside that call instead of ringing again. A call placed
+while another is running waits up to `busy_wait` seconds for the line. The tool's wait covers
+`attempts × (ring_timeout + pause_seconds) + 2 × ring_timeout + 30` seconds, using the configured
+defaults for omitted arguments. Cancellation retracts ringing and closes setup. A connected call
+keeps running after the tool returns.
 
 `xmpp_message`: `to` (an allowed user or a partner agent) and `text`, sent through the running
 adapter (never a second process). Hermes has no general `send_message` tool for agents. At most
@@ -580,8 +604,9 @@ plugin enforces only the steps marked *(Plugin)*.
    (reference, steps for requested changes), then a line `BRIEFING:` followed by what to say.
 2. *(Plugin)* The phone agent's adapter remembers `topic` and the text before `BRIEFING:` as
    context for 10 minutes (the latest request only), so `xmpp_call` fills in `topic` and
-   `context` when the model forgets them. The message is still delivered to the agent as an
-   ordinary machine message.
+   `context` when the model forgets them. Metadata is consumed once; the guard and parser run
+   after OMEMO decryption, not on the encrypted message's fallback text. The message is still
+   delivered to the agent as an ordinary machine message.
 3. The phone agent calls you with `xmpp_call`. If you ask for a change, it sends the task back
    with `xmpp_message`.
 4. The worker replies `RESULT: ...` (plain text; the plugin does not parse it). The phone agent

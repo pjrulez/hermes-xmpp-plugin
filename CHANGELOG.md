@@ -18,6 +18,21 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- Preserve queued caller requests across goodbye replies, recoverable agent failures and steering
+  races. Coalesce concurrent hang-up grace checks; prevent late STT/TTS after terminal cleanup.
+- Apply sentence-level playback backpressure. Filler synthesis failure no longer discards a
+  successful agent result; zero-length preroll does not retain silence indefinitely.
+- Register pending sessions before TURN discovery, retain early candidates, and honor early
+  termination. Disconnect prevents late outgoing answers from creating calls. Remote termination
+  wakes setup waits immediately instead of becoming a false timeout.
+- Reject unsupported multi-content audio/video offers and unsupported Jingle actions explicitly.
+  Handle authenticated received JMI carbons, retractions, duplicate and stale proposals; use the
+  standard `cancel` termination reason.
+- Keep OMEMO locks across module reloads and canonicalize symlinked store paths before atomic
+  writes. Use platform-appropriate POSIX/Windows locking. Windows behavior is simulation-tested.
+- Default invalid/nonfinite numeric settings safely even when calls are off; normalize tool
+  targets and process partner filters and request metadata after OMEMO decryption.
+
 - OMEMO: download a contact's device list before encrypting to them. slixmpp-omemo skips
   the download under mutual presence, so a fresh store failed with NoEligibleDevices.
 - Preserve outgoing voice SFS metadata, file hash, and upload URL by appending

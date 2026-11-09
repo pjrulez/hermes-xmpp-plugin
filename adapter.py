@@ -57,6 +57,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -136,8 +137,8 @@ class OmemoStoreError(RuntimeError):
     """The OMEMO key file cannot be used safely; OMEMO stays off rather than risk the keys."""
 
 
-# Store files this process already holds the lock for (a reconnect rebuilds the adapter).
-_OMEMO_LOCKS: Dict[str, int] = {}
+# Keep the process-lifetime descriptors reachable across adapter reloads/reimports.
+_OMEMO_LOCKS: dict[str, int] = sys.__dict__.setdefault("_hermes_xmpp_omemo_locks", {})
 
 
 def _lock_omemo_store(path: Path) -> None:
@@ -147,12 +148,22 @@ def _lock_omemo_store(path: Path) -> None:
     key = os.path.realpath(path)
     if key in _OMEMO_LOCKS:
         return
-    import fcntl
+    try:
+        import fcntl
+    except ImportError:
+        import msvcrt
+        fcntl = None
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(f"{key}.lock", os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            # Windows locks a byte range starting at the current file position.
+            os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
     except OSError as exc:
         os.close(fd)
         raise OmemoStoreError(f"{path} is in use by another process") from exc
@@ -165,7 +176,7 @@ if SLIXMPP_OMEMO_AVAILABLE:
 
         def __init__(self, json_file_path: Path) -> None:
             super().__init__()  # type: ignore[misc]
-            self._path = json_file_path
+            self._path = json_file_path.resolve()
             self._data: Dict[str, Any] = {}
             _lock_omemo_store(self._path)
             if self._path.exists() and self._path.stat().st_size:
@@ -559,7 +570,7 @@ class XmppAdapter(BasePlatformAdapter):
                 _max_len = int(_max_len_raw)
                 if _max_len > 0:
                     self.MAX_MESSAGE_LENGTH = _max_len
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logger.warning("xmpp: invalid max_message_length %r, using default", _max_len_raw)
 
         # Allow operators on a slow/high-latency link to the server to raise
@@ -571,9 +582,9 @@ class XmppAdapter(BasePlatformAdapter):
         if _connect_timeout_raw:
             try:
                 _connect_timeout = float(_connect_timeout_raw)
-                if _connect_timeout > 0:
+                if math.isfinite(_connect_timeout) and _connect_timeout > 0:
                     self._CONNECT_TIMEOUT_SECS = _connect_timeout
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logger.warning(
                     "xmpp: invalid connect_timeout_secs %r, using default", _connect_timeout_raw
                 )
@@ -581,7 +592,11 @@ class XmppAdapter(BasePlatformAdapter):
         self.jid: str = str(extra.get("jid") or _scoped_getenv("XMPP_JID", "")).strip()
         self._password: str = str(extra.get("password") or _scoped_getenv("XMPP_PASSWORD", "")).strip()
         self.host: Optional[str] = extra.get("host") or _scoped_getenv("XMPP_HOST") or None
-        self.port: int = int(extra.get("port") or _scoped_getenv("XMPP_PORT", "5222") or 5222)
+        try:
+            self.port: int = int(extra.get("port") or _scoped_getenv("XMPP_PORT", "5222") or 5222)
+        except (TypeError, ValueError, OverflowError):
+            logger.warning("xmpp: invalid port, using default")
+            self.port = 5222
         # IPv6 tri-state: None = auto-detect a working global v6 route at
         # connect time. Explicit true/false via XMPP_USE_IPV6 / use_ipv6.
         # NOTE: a YAML `use_ipv6: false` arrives as a real Python bool, and
@@ -1501,12 +1516,6 @@ class XmppAdapter(BasePlatformAdapter):
                 user_name, user_id = None, from_bare
             if not self._is_authorized(chat_type=chat_type, chat_id=chat_id, user_jid=user_id):
                 return
-            if user_id.lower() in self._agent_peers:
-                if _is_gateway_notice(stanza["body"]) or not self._agent_peer_may_speak(
-                    user_id.lower()
-                ):
-                    return
-                self._note_call_request(stanza["body"] or "")  # only what passed the loop guard
             if chat_type == "dm":
                 self._known_dms.add(from_bare)
 
@@ -1529,6 +1538,11 @@ class XmppAdapter(BasePlatformAdapter):
                     except Exception as exc:
                         logger.warning("OMEMO: failed to decrypt message from %s: %s", from_bare, exc)
                         return
+
+            if user_id.lower() in self._agent_peers:
+                if _is_gateway_notice(body) or not self._agent_peer_may_speak(user_id.lower()):
+                    return
+                self._note_call_request(body)  # only decrypted text that passed the loop guard
 
             # ----------------------------------------------------------------
             # Inbound XEP-0004 form submission (clarify response)
@@ -3064,7 +3078,7 @@ def _xmpp_message_tool(args: dict, **_kw: Any) -> str:
     adapter_ = _live_adapter()
     if adapter_ is None or adapter_._calls_loop is None:
         return result(False, "XMPP is not connected")
-    to = adapter_._bare(str((args or {}).get("to") or "")).lower()
+    to = adapter_._bare(str((args or {}).get("to") or "").strip()).lower()
     text = str((args or {}).get("text") or "").strip()
     known = {j.lower() for j in adapter_.allowed_users} | set(adapter_._agent_peers)
     if not text:
@@ -3097,14 +3111,15 @@ def _calls_available() -> bool:
 def _bounded_int(value: Any, low: int, high: int) -> Optional[int]:
     try:
         return min(high, max(low, int(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
 def _bounded_float(value: Any, low: float, high: float) -> Optional[float]:
     try:
-        return min(high, max(low, float(value)))
-    except (TypeError, ValueError):
+        value = float(value)
+        return min(high, max(low, value)) if math.isfinite(value) else None
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -3122,8 +3137,11 @@ def _xmpp_call_tool(args: dict, **_kw: Any) -> str:
         return result(False, "an opening line is required")
     host = adapter_._calls_host
     allowed = sorted(host.callable_jids() if hasattr(host, "callable_jids") else adapter_.allowed_users)
-    target = adapter_._bare(str(args.get("to") or "")) if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
-    if target and target.lower() not in allowed:
+    target = (
+        adapter_._bare(str(args.get("to") or "").strip()).lower()
+        if args.get("to") else (allowed[0] if len(allowed) == 1 else "")
+    )
+    if target and target not in allowed:
         return result(False, f"cannot call {target}; callable people: " + ", ".join(allowed))
     if not target:
         return result(False, "say who to call with `to`; one of: " + ", ".join(allowed))
@@ -3173,20 +3191,23 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
     raw = extra.get("calls") if isinstance(extra, dict) else None
     raw = raw if isinstance(raw, dict) else {}
 
-    def number(key: str, default: float, kind: type) -> Any:
+    def number(key: str, default: float, kind: type, minimum: float | None = None) -> Any:
         try:
-            return kind(raw.get(key, default))
-        except (TypeError, ValueError):
+            value = kind(raw.get(key, default))
+            if not math.isfinite(value) or (minimum is not None and value < minimum):
+                raise ValueError("not finite or below minimum")
+            return value
+        except (TypeError, ValueError, OverflowError):
             logger.warning("xmpp: invalid calls.%s %r, using %r", key, raw.get(key), default)
             return kind(default)
 
     return {
         "enabled": _truthy(raw.get("enabled", _scoped_getenv("XMPP_CALLS_ENABLED", "false"))),
-        "max_seconds": number("max_seconds", 600, int),
+        "max_seconds": number("max_seconds", 600, int, 1),
         "greeting": str(raw.get("greeting", _CALL_GREETING)),
-        "filler_after": number("filler_after", 3.0, float),
-        "ring_timeout": number("ring_timeout", 60, int),
-        "silence_ms": number("silence_ms", 800, int),
+        "filler_after": number("filler_after", 3.0, float, 0),
+        "ring_timeout": number("ring_timeout", 60, int, 1),
+        "silence_ms": number("silence_ms", 800, int, 1),
         "vad_level": min(3, max(0, number("vad_level", 2, int))),
         "ack_tone": _truthy(raw.get("ack_tone", True)),
         "allowed_users": sorted(
@@ -3197,7 +3218,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "idle_timeout": max(0.0, number("idle_timeout", 60.0, float)),
         "log_transcripts": _truthy(raw.get("log_transcripts", False)),
         "busy_wait": max(0.0, number("busy_wait", 90.0, float)),
-        "ring_attempts": max(1, number("ring_attempts", 1, int)),
+        "ring_attempts": min(5, max(1, number("ring_attempts", 1, int))),
         "ring_pause": max(0.0, number("ring_pause", 60.0, float)),
         "barge_in": "stop" if str(raw.get("barge_in", "queue")).lower() == "stop" else "queue",
     }

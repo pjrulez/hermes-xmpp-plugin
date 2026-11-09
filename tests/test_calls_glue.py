@@ -107,7 +107,7 @@ def test_enabled_builds_controller_and_installs_handlers():
     controller = a._build_calls(client)
     assert controller is not None
     assert a._calls_host is not None
-    assert client.register_handler.call_count == 5  # propose, retract, proceed, reject, jingle
+    assert client.register_handler.call_count == 6  # JMI x4, received carbon, Jingle
     client.register_plugin.assert_called_with("xep_0115")
 
 

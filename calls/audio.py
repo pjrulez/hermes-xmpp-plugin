@@ -109,7 +109,8 @@ class Endpointer:
         events: list[SpeechHeld | Utterance] = []
         if not self._open:
             if not voiced:
-                self._idle = [*self._idle, frame][-self._preroll :]
+                if self._preroll:
+                    self._idle = [*self._idle, frame][-self._preroll :]
                 return events
             self._open, self._frames = True, [*self._idle, frame]
             self._idle, self._voiced, self._silence, self._held = [], FRAME_MS, 0, False
@@ -188,12 +189,20 @@ class PlaybackTrack(MediaStreamTrack):
         self._start: float | None = None
         self._n = 0
         self.played = 0  # samples of real audio sent so far
+        self._drained = asyncio.Event()
 
     def play(self, pcm: np.ndarray) -> None:
         self._buf = np.concatenate([self._buf, pcm])
 
     def flush(self) -> None:
-        self._buf = self._buf[:0]
+        self._buf = np.zeros(0, np.int16)
+        self._drained.set()
+
+    async def wait_room(self) -> None:
+        """Keep synthesis at most five seconds ahead, plus the next atomic sentence."""
+        while len(self._buf) >= 5 * OUT_RATE:
+            self._drained.clear()
+            await asyncio.wait_for(self._drained.wait(), 60.0)
 
     @property
     def busy(self) -> bool:
@@ -211,6 +220,9 @@ class PlaybackTrack(MediaStreamTrack):
             self._start = time.monotonic()
         await asyncio.sleep(max(0.0, self._start + self._n * FRAME_MS / 1000 - time.monotonic()))
         chunk, self._buf = self._buf[:OUT_FRAME], self._buf[OUT_FRAME:]
+        if not self.busy:
+            self.flush()
+        self._drained.set()
         self.played += len(chunk)
         frame = av.AudioFrame.from_ndarray(
             np.pad(chunk, (0, OUT_FRAME - len(chunk))).reshape(1, -1), format="s16", layout="mono"

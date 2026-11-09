@@ -91,6 +91,7 @@ class Conversation:
         self._thinking = False
         self.hangup_grace = hangup_grace  # seconds the caller gets to speak before we hang up
         self._spoke = asyncio.Event()  # set whenever the caller starts to speak
+        self._grace: asyncio.Task[bool] | None = None
         self._utterances: asyncio.Queue[bool] = asyncio.Queue()  # did each utterance hold words?
         self._hear_lock = asyncio.Lock()
         self._background: set[asyncio.Task[None]] = set()
@@ -102,8 +103,9 @@ class Conversation:
         self._cache: dict[
             str, asyncio.Future[np.ndarray]
         ] = {}  # sentence -> audio being made ahead
+        self._cache_changed = asyncio.Event()
         self._protected = False  # speaking something the caller must not interrupt
-        self._prep: asyncio.Future[None] | None = None
+        self._prep: asyncio.Task[None] | None = None
         self._endpointer = endpointer or Endpointer()
         self._turn_pcm: np.ndarray | None = None  # caller audio of a turn with no reply yet
         self.playback = PlaybackTrack()
@@ -113,6 +115,7 @@ class Conversation:
         self._note = ""
         self.turns = 0  # caller turns the agent has answered
         self.closed = False  # the call is over: nothing is spoken, replies go out as text
+        self._stopped = False  # unlike finish(), stop() discards remaining work
         self.log_text = log_text  # put what was said into the log (off: only its length)
         self.last_active = time.monotonic()  # last speech either way, for the idle timeout
 
@@ -124,18 +127,36 @@ class Conversation:
     def prepare(self, text: str) -> None:
         """Synthesize `text` in the background, one sentence at a time (the TTS queue refuses
         parallel jobs), so `say()` has no gap. Results are consumed by `_speak`."""
+        if self.closed:
+            return
         parts = [p for p in sentences(text) if p not in self._cache]
         loop = asyncio.get_running_loop()
         futures = {p: self._cache.setdefault(p, loop.create_future()) for p in parts}
 
         async def run() -> None:
-            for part, future in futures.items():
-                try:
-                    future.set_result(await self._synth(part))
-                except Exception as error:
-                    future.set_exception(error)
+            try:
+                for part in tuple(futures):
+                    if self.closed:
+                        return
+                    future = futures[part]
+                    while sum(f.done() for f in self._cache.values()) >= 2:
+                        self._cache_changed.clear()
+                        await self._cache_changed.wait()
+                    try:
+                        audio = await self._synth(part)
+                        if not future.done():
+                            future.set_result(audio)
+                    except Exception as error:
+                        if not future.done():
+                            future.set_exception(error)
+                    futures.pop(part)
+            finally:
+                for future in futures.values():
+                    future.cancel()
 
-        self._prep = asyncio.ensure_future(run())
+        self._prep = asyncio.create_task(run())
+        self._background.add(self._prep)
+        self._prep.add_done_callback(self._background.discard)
 
     async def _synth(self, text: str) -> np.ndarray:
         return await retry(lambda: self.speech.synthesize(text))
@@ -171,8 +192,13 @@ class Conversation:
     async def grace(self, seconds: float) -> bool:
         """About to hang up: warn with two falling beeps and give the caller `seconds` to speak.
         True if they did (the call goes on), False if it is time to hang up."""
-        if seconds <= 0:
+        if seconds <= 0 or self.closed:
             return False
+        if self._grace is None or self._grace.done():
+            self._grace = asyncio.create_task(self._wait_for_speech(seconds))
+        return await asyncio.shield(self._grace)
+
+    async def _wait_for_speech(self, seconds: float) -> bool:
         self._spoke.clear()
         while not self._utterances.empty():
             self._utterances.get_nowait()
@@ -231,17 +257,40 @@ class Conversation:
         for utterance in self._endpointer.flush():  # what they were saying as they hung up
             self._on_utterance(utterance.pcm)
         deadline = asyncio.get_running_loop().time() + max_seconds
-        while True:
-            running = set(self._background)
-            if self._task and not self._task.done() and self._task is not asyncio.current_task():
-                running.add(self._task)
-            left = deadline - asyncio.get_running_loop().time()
-            if not running or left <= 0:
-                return
-            await asyncio.wait(running, timeout=left)
+        try:
+            while True:
+                running = {task for task in self._background if not task.done()}
+                if self._task and not self._task.done():
+                    running.add(self._task)
+                running.discard(asyncio.current_task())
+                left = deadline - asyncio.get_running_loop().time()
+                if not running or left <= 0:
+                    break
+                await asyncio.wait(running, timeout=left)
+        finally:
+            remaining = {
+                task
+                for task in (*self._background, self._listener, self._task, self._prep, self._grace)
+                if task is not None and task is not asyncio.current_task()
+            }
+            self.stop()
+            await asyncio.gather(*remaining, return_exceptions=True)
+            self.playback.flush()
 
     def stop(self) -> None:
-        for task in (self._listener, self._task, self._prep):
+        self.closed = self._stopped = True
+        self.playback.flush()
+        self._queued.clear()
+        self._turn = self._turn_pcm = self._filler_audio = None
+        self._endpointer.reset()
+        for future in self._cache.values():
+            if future.done() and not future.cancelled():
+                future.exception()
+            else:
+                future.cancel()
+        self._cache.clear()
+        self._cache_changed.set()
+        for task in (*self._background, self._listener, self._task, self._prep, self._grace):
             if task and task is not asyncio.current_task():  # hang-up runs inside the turn task
                 task.cancel()
 
@@ -279,6 +328,7 @@ class Conversation:
             logging.exception("call listener crashed")
         finally:
             pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
     def _barge_in(self) -> None:
         """Caller spoke over us: stop audio, drop pending synthesis, remember what was heard."""
@@ -294,6 +344,8 @@ class Conversation:
             self._task.cancel()
 
     def _on_utterance(self, pcm: np.ndarray) -> None:
+        if self._stopped:
+            return
         if self.barge_in == "stop":
             self._start_turn(pcm)
             return
@@ -310,16 +362,21 @@ class Conversation:
                 logging.exception("transcription failed")
                 self._utterances.put_nowait(False)
                 return
+            if self._stopped:
+                return
             if not text or is_phantom(text, len(pcm) / STT_RATE):
                 logging.info("heard no words in a %.1fs utterance", len(pcm) / STT_RATE)
                 self._utterances.put_nowait(False)
                 return
             self._say_in_log("caller", text)
             self._utterances.put_nowait(True)
+            if self._thinking and self.steer is not None and await self.steer(text):
+                logging.info("steered the running turn")
+                return
+            if self._stopped:
+                return
             if self._task is None or self._task.done():
                 self._start_text(text)
-            elif self._thinking and self.steer is not None and await self.steer(text):
-                logging.info("steered the running turn")
             else:
                 self._queued.append(text)
 
@@ -334,6 +391,8 @@ class Conversation:
         self._turn_pcm = pcm
         if self._task and not self._task.done():
             self._task.cancel()
+            self._background.add(self._task)
+            self._task.add_done_callback(self._background.discard)
         self._task = asyncio.create_task(self._run_turn(pcm, None))
 
     async def _run_turn(self, pcm: np.ndarray | None, said: str | None) -> None:
@@ -349,6 +408,8 @@ class Conversation:
                 self._say_in_log("caller", text)
             else:
                 text = said
+            if self._stopped:
+                return
             t1 = time.monotonic()
             reply, hangup = split_hangup(await self._answer(self._note + text))
             self._note = ""
@@ -372,18 +433,28 @@ class Conversation:
                 await self.playback.wait_idle()
             if hangup:
                 logging.info("hang-up requested: %.0fs to speak", self.hangup_grace)
-            if hangup and not await self.grace(self.hangup_grace):
+            if (
+                hangup
+                and not self.closed
+                and not self._queued
+                and not await self.grace(self.hangup_grace)
+                and not self.closed
+                and not self._queued
+            ):
                 logging.info("nobody spoke: hanging up")
                 await self.on_hangup()
-            elif self._queued:  # said while we were busy: that is the next turn
-                self._start_text(" ".join(self._queued))
-                self._queued.clear()
         except asyncio.CancelledError:
             raise
         except Exception:
             logging.exception("turn failed")
             self._turn_pcm = None
             await self._apologize()
+        finally:
+            task = asyncio.current_task()
+            if self._queued and self._task is task and task is not None and not task.cancelling():
+                # said while we were busy: that is the next turn
+                self._start_text(" ".join(self._queued))
+                self._queued.clear()
 
     async def _answer(self, text: str) -> str:
         """Ask the agent; if it is slow, say a short filler so the line is not dead."""
@@ -392,34 +463,56 @@ class Conversation:
         try:
             done, _ = await asyncio.wait({reply}, timeout=self.filler_after)
             if not done and not self.closed:
-                if self._filler_audio is None:
-                    self._filler_audio = await self._synth(FILLER)
-                self.playback.play(self._filler_audio)
+                try:
+                    if self._filler_audio is None:
+                        self._filler_audio = await self._synth(FILLER)
+                    if not self.closed:
+                        self.playback.play(self._filler_audio)
+                except Exception:
+                    logging.exception("filler synthesis failed; still waiting for the answer")
             return await reply
         finally:
             self._thinking = False
             reply.cancel()  # no-op when finished; stops the agent call on barge-in
+            await asyncio.gather(reply, return_exceptions=True)
 
     async def _speak(self, turn: Turn) -> None:
         """Queue every sentence of `turn` for playback. A sentence that cannot be synthesized
         (after retries) ends the speech and the rest is posted to chat as text."""
         self._turn = turn
-        for index, part in enumerate(turn.parts):
+        for _index, part in enumerate(turn.parts):
             try:
+                if self.closed:
+                    break
+                await self.playback.wait_room()
+                if self.closed:
+                    break
                 ahead = self._cache.pop(part, None)
+                self._cache_changed.set()
                 audio = await ahead if ahead is not None else await self._synth(part)
             except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if self.closed and task is not None and not task.cancelling():
+                    break  # preparation stopped at hang-up; the turn still owes its text
                 raise
             except Exception:
                 logging.exception("speech synthesis failed; sending the rest as text")
-                if self.fallback_text is not None:
-                    await self.fallback_text(" ".join(turn.parts[index:]))
-                return
+                break
+            if self.closed:
+                break
             turn.samples.append(len(audio))
             self.playback.play(audio)
+        else:
+            return
+        if self.fallback_text is not None:
+            await self.fallback_text(" ".join(turn.parts[0 if self.closed else _index :]))
 
     async def _apologize(self) -> None:
+        if self.closed:
+            return
         try:
-            self.playback.play(await self._synth(OOPS))
+            audio = await self._synth(OOPS)
+            if not self.closed:
+                self.playback.play(audio)
         except Exception:
             logging.exception("TTS also failed; staying silent")
