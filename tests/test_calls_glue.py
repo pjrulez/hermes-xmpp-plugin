@@ -68,7 +68,7 @@ def test_calls_are_off_by_default():
 def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
-        "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "ring_timeout": 60,
+        "enabled": True, "max_seconds": 120, "greeting": "Hello!", "filler_after": 2.0, "filler": "One moment.", "ring_timeout": 60,
         "recap": True, "idle_timeout": 60.0, "log_transcripts": False, "busy_wait": 90.0, "ring_attempts": 1, "ring_pause": 60.0, "silence_ms": 800, "vad_level": 2, "ack_tone": True, "barge_in": "queue", "allowed_users": [], "hangup_grace": 5.0,
     }
 
@@ -81,6 +81,11 @@ def test_vad_level_is_clamped_and_ack_tone_can_be_off():
 def test_bad_numbers_fall_back():
     cfg = adapter._calls_settings({"calls": {"max_seconds": "soon", "filler_after": None}})
     assert (cfg["max_seconds"], cfg["filler_after"]) == (600, 3.0)
+
+
+def test_filler_can_be_changed_or_turned_off():
+    assert adapter._calls_settings({"calls": {"filler": "Hold on."}})["filler"] == "Hold on."
+    assert adapter._calls_settings({"calls": {"filler": ""}})["filler"] == ""
 
 
 def test_env_enables_calls(monkeypatch):

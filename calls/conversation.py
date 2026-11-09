@@ -2,9 +2,12 @@
 with barge-in. Providers are injected, so the loop is testable without audio models."""
 
 import asyncio
+import hashlib
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
@@ -23,7 +26,6 @@ from .audio import (
 from .speech import is_phantom, sentences, split_hangup
 
 OOPS = "Sorry, something went wrong. Please say that again."
-FILLER = "One moment."
 GAP_S = 0.1  # no RTP for this long: the clock, not packets, advances endpointing
 
 
@@ -74,6 +76,8 @@ class Conversation:
         respond: Callable[[str], Awaitable[str]],
         on_hangup: Callable[[], Awaitable[None]],
         filler_after: float = 3.0,
+        filler: str = "One moment.",
+        filler_cache: Path | None = None,
         endpointer: Endpointer | None = None,
         ack_tone_enabled: bool = True,
         fallback_text: Callable[[str], Awaitable[None]] | None = None,
@@ -98,7 +102,9 @@ class Conversation:
         self.speech, self.respond, self.on_hangup = speech, respond, on_hangup
         self.fallback_text = fallback_text  # gets the reply as text when speaking it fails
         self._ack = ack_tone() if ack_tone_enabled else None
-        self.filler_after = filler_after  # seconds of waiting for the agent before "One moment."
+        self.filler_after = filler_after  # seconds of waiting for the agent before the filler
+        self.filler = filler  # "" turns it off
+        self.filler_cache = filler_cache  # directory holding the filler audio between calls
         self._filler_audio: np.ndarray | None = None
         self._cache: dict[
             str, asyncio.Future[np.ndarray]
@@ -157,6 +163,39 @@ class Conversation:
         self._prep = asyncio.create_task(run())
         self._background.add(self._prep)
         self._prep.add_done_callback(self._background.discard)
+
+    async def _filler_clip(self) -> np.ndarray:
+        """The filler audio: from the cache directory if present, else synthesized once and saved.
+        The file name carries the phrase, so changing `filler` makes a new file."""
+        path = None
+        if self.filler_cache is not None:
+            digest = hashlib.sha256(self.filler.encode()).hexdigest()[:12]
+            path = self.filler_cache / f"filler-{digest}.npy"
+            if (clip := await asyncio.to_thread(self._load_clip, path)) is not None:
+                return clip
+        clip = await self._synth(self.filler)
+        if path is not None:
+            await asyncio.to_thread(self._save_clip, path, clip)
+        return clip
+
+    @staticmethod
+    def _load_clip(path: Path) -> np.ndarray | None:
+        try:
+            clip = np.load(path, allow_pickle=False)
+        except OSError, ValueError:
+            return None  # missing or damaged: the caller makes it again
+        return clip if clip.ndim == 1 and clip.dtype == np.int16 and clip.size else None
+
+    @staticmethod
+    def _save_clip(path: Path, clip: np.ndarray) -> None:
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "wb") as handle:
+                np.save(handle, clip, allow_pickle=False)
+            os.replace(tmp, path)
+        except OSError:
+            logging.warning("calls: could not save the filler audio to %s", path)
 
     async def _synth(self, text: str) -> np.ndarray:
         return await retry(lambda: self.speech.synthesize(text))
@@ -462,10 +501,10 @@ class Conversation:
         self._thinking = True
         try:
             done, _ = await asyncio.wait({reply}, timeout=self.filler_after)
-            if not done and not self.closed:
+            if not done and not self.closed and self.filler:
                 try:
                     if self._filler_audio is None:
-                        self._filler_audio = await self._synth(FILLER)
+                        self._filler_audio = await self._filler_clip()
                     if not self.closed:
                         self.playback.play(self._filler_audio)
                 except Exception:

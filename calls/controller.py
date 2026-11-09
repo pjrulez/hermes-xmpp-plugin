@@ -10,6 +10,7 @@ from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol
 from xml.etree import ElementTree as ET
 
@@ -80,6 +81,8 @@ class CallConfig:
     max_seconds: int = 600
     greeting: str = "Hi, I'm here. What can I do for you?"
     filler_after: float = 3.0
+    filler: str = "One moment."  # said when the agent is slow; "" turns it off
+    filler_cache: Path | None = None  # where its audio is kept between calls (None: not kept)
     max_calls: int = 1
     ring_timeout: int = 60  # outgoing calls: seconds to ring before giving up
     ring_attempts: int = 1  # rings before the message goes out as text (urgent calls: more)
@@ -467,6 +470,8 @@ class CallController:
             lambda text: self.host.ask(bare, sid, text),
             lambda: self.end(sid, "success", notify=True),
             filler_after=config.filler_after,
+            filler=config.filler,
+            filler_cache=config.filler_cache,
             endpointer=Endpointer(
                 silence_ms=config.silence_ms, is_speech=webrtc_vad(config.vad_level)
             ),
