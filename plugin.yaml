@@ -78,6 +78,21 @@ optional_env:
     description: Comma-separated upload hosts allowed to resolve to LAN/tailnet addresses when fetching voice notes (wildcards like *.example.org allowed). Default is the bot's own XMPP domain and its subdomains; set "none" to apply Hermes' SSRF policy to every host.
     prompt: Trusted voice upload hosts
     password: false
+  - name: XMPP_CALLS_ENABLED
+    description: Enable audio calls (Jingle RTP). Off by default; needs the packages in requirements-calls.txt. The xmpp.calls.* config keys override it.
+    prompt: Enable audio calls? true/false
+    password: false
+  - name: XMPP_PLAINTEXT_PEERS
+    description: Comma-separated bare JIDs that never receive OMEMO-encrypted messages (opt-in; for trusted partner agents). Empty by default.
+    prompt: Plaintext peer JIDs
+    password: false
+  - name: XMPP_AGENT_PEERS
+    description: Comma-separated bare JIDs of partner agents. They may message the agent (rate limited) but can never call or be called.
+    prompt: Partner agent JIDs
+    password: false
+provides_tools:
+  - xmpp_call
+  - xmpp_message
 # Installed into the managed venv by `hermes pm install` / `hermes update`.
 # aiohttp is left unpinned so it follows Hermes' own pin (>=3.14.1 for the CVE fixes).
 pip_dependencies:

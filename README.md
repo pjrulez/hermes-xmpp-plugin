@@ -154,8 +154,8 @@ multiplexed gateway read [Multiple Hermes profiles](#multiple-hermes-profiles).
 | (env only) | `XMPP_REACTIONS` | `true` | `false/0/no` turns off the 👀/✅/❌ reactions. |
 | `calls.*` | `XMPP_CALLS_ENABLED` | off | Audio calls; see [Call options](#call-options). |
 
-Env vars missing from `plugin.yaml`'s list: `XMPP_PLAINTEXT_PEERS`, `XMPP_AGENT_PEERS`,
-`XMPP_CALLS_ENABLED`, `XMPP_USE_IPV6`, `XMPP_REACTIONS`, `XMPP_DISABLE_CLARIFY_FORMS`.
+Env vars not listed in `plugin.yaml` (they are optional and read by the adapter):
+`XMPP_USE_IPV6`, `XMPP_REACTIONS`, `XMPP_DISABLE_CLARIFY_FORMS`.
 
 ## OMEMO end-to-end encryption (optional)
 
