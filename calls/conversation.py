@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -26,6 +27,14 @@ from .audio import (
 from .speech import is_phantom, sentences, split_hangup
 
 OOPS = "Sorry, something went wrong. Please say that again."
+FILLERS = (
+    "One moment.",
+    "Let me check.",
+    "Working on it.",
+    "Just a second.",
+    "Give me a moment.",
+    "Bear with me.",
+)
 GAP_S = 0.1  # no RTP for this long: the clock, not packets, advances endpointing
 
 
@@ -76,7 +85,7 @@ class Conversation:
         respond: Callable[[str], Awaitable[str]],
         on_hangup: Callable[[], Awaitable[None]],
         filler_after: float = 3.0,
-        filler: str = "One moment.",
+        fillers: tuple[str, ...] = FILLERS,
         filler_cache: Path | None = None,
         endpointer: Endpointer | None = None,
         ack_tone_enabled: bool = True,
@@ -103,9 +112,10 @@ class Conversation:
         self.fallback_text = fallback_text  # gets the reply as text when speaking it fails
         self._ack = ack_tone() if ack_tone_enabled else None
         self.filler_after = filler_after  # seconds of waiting for the agent before the filler
-        self.filler = filler  # "" turns it off
+        self.fillers = fillers  # one is picked at random each time; () turns it off
         self.filler_cache = filler_cache  # directory holding the filler audio between calls
-        self._filler_audio: np.ndarray | None = None
+        self._filler_audio: dict[str, np.ndarray] = {}  # phrase -> audio, for this call
+        self._last_filler = ""
         self._cache: dict[
             str, asyncio.Future[np.ndarray]
         ] = {}  # sentence -> audio being made ahead
@@ -165,18 +175,23 @@ class Conversation:
         self._prep.add_done_callback(self._background.discard)
 
     async def _filler_clip(self) -> np.ndarray:
-        """The filler audio: from the cache directory if present, else synthesized once and saved.
-        The file name carries the phrase, so changing `filler` makes a new file."""
+        """A random filler (never the same twice in a row), played from this call's memory or the
+        cache directory, else synthesized once and saved. The cache file name carries the phrase,
+        so changing the phrases makes new files."""
+        choices = [p for p in self.fillers if p != self._last_filler] or list(self.fillers)
+        phrase = self._last_filler = random.choice(choices)
+        if phrase in self._filler_audio:
+            return self._filler_audio[phrase]
         path = None
         if self.filler_cache is not None:
-            digest = hashlib.sha256(self.filler.encode()).hexdigest()[:12]
+            digest = hashlib.sha256(phrase.encode()).hexdigest()[:12]
             path = self.filler_cache / f"filler-{digest}.npy"
             if (clip := await asyncio.to_thread(self._load_clip, path)) is not None:
-                return clip
-        clip = await self._synth(self.filler)
+                return self._filler_audio.setdefault(phrase, clip)
+        clip = await self._synth(phrase)
         if path is not None:
             await asyncio.to_thread(self._save_clip, path, clip)
-        return clip
+        return self._filler_audio.setdefault(phrase, clip)
 
     @staticmethod
     def _load_clip(path: Path) -> np.ndarray | None:
@@ -320,7 +335,8 @@ class Conversation:
         self.closed = self._stopped = True
         self.playback.flush()
         self._queued.clear()
-        self._turn = self._turn_pcm = self._filler_audio = None
+        self._turn = self._turn_pcm = None
+        self._filler_audio = {}
         self._endpointer.reset()
         for future in self._cache.values():
             if future.done() and not future.cancelled():
@@ -501,12 +517,11 @@ class Conversation:
         self._thinking = True
         try:
             done, _ = await asyncio.wait({reply}, timeout=self.filler_after)
-            if not done and not self.closed and self.filler:
+            if not done and not self.closed and self.fillers:
                 try:
-                    if self._filler_audio is None:
-                        self._filler_audio = await self._filler_clip()
+                    clip = await self._filler_clip()
                     if not self.closed:
-                        self.playback.play(self._filler_audio)
+                        self.playback.play(clip)
                 except Exception:
                     logging.exception("filler synthesis failed; still waiting for the answer")
             return await reply

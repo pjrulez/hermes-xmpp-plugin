@@ -968,7 +968,7 @@ class XmppAdapter(BasePlatformAdapter):
                 max_seconds=self._calls_cfg["max_seconds"],
                 greeting=self._calls_cfg["greeting"],
                 filler_after=self._calls_cfg["filler_after"],
-                filler=self._calls_cfg["filler"],
+                **({"fillers": self._calls_cfg["filler"]} if self._calls_cfg["filler"] is not None else {}),
                 filler_cache=Path(__file__).resolve().parent / "cache",
                 ring_timeout=self._calls_cfg["ring_timeout"],
                 silence_ms=self._calls_cfg["silence_ms"],
@@ -3208,7 +3208,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
         "max_seconds": number("max_seconds", 600, int, 1),
         "greeting": str(raw.get("greeting", _CALL_GREETING)),
         "filler_after": number("filler_after", 3.0, float, 0),
-        "filler": str(raw.get("filler", "One moment.")).strip(),
+        "filler": _fillers(raw.get("filler")),
         "ring_timeout": number("ring_timeout", 60, int, 1),
         "silence_ms": number("silence_ms", 800, int, 1),
         "vad_level": min(3, max(0, number("vad_level", 2, int))),
@@ -3229,6 +3229,14 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
 
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _fillers(value: Any) -> tuple[str, ...] | None:
+    """None: not set (use the built-in phrases). Otherwise the phrases; empty means no filler."""
+    if value is None:
+        return None
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return tuple(p for item in items if (p := str(item).strip()))
 
 
 def _csv(value: Any) -> str:

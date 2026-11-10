@@ -18,7 +18,7 @@ from slixmpp.exceptions import XMPPError
 
 from . import turn
 from .audio import Endpointer, webrtc_vad
-from .conversation import Conversation, Speech
+from .conversation import FILLERS, Conversation, Speech
 from .jingle import wire
 from .jingle.model import JINGLE, RTP, Candidate, Jingle, JingleError
 from .jingle.sdp import MAX_CANDIDATES
@@ -81,7 +81,7 @@ class CallConfig:
     max_seconds: int = 600
     greeting: str = "Hi, I'm here. What can I do for you?"
     filler_after: float = 3.0
-    filler: str = "One moment."  # said when the agent is slow; "" turns it off
+    fillers: tuple[str, ...] = FILLERS  # one is said at random when the agent is slow; () is off
     filler_cache: Path | None = None  # where its audio is kept between calls (None: not kept)
     max_calls: int = 1
     ring_timeout: int = 60  # outgoing calls: seconds to ring before giving up
@@ -470,7 +470,7 @@ class CallController:
             lambda text: self.host.ask(bare, sid, text),
             lambda: self.end(sid, "success", notify=True),
             filler_after=config.filler_after,
-            filler=config.filler,
+            fillers=config.fillers,
             filler_cache=config.filler_cache,
             endpointer=Endpointer(
                 silence_ms=config.silence_ms, is_speech=webrtc_vad(config.vad_level)
