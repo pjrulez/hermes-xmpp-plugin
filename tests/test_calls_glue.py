@@ -65,6 +65,19 @@ def test_calls_are_off_by_default():
     assert make_adapter()._calls_cfg["enabled"] is False
 
 
+def run_loop_in_thread():
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    return loop, thread
+
+
+def stop_loop(loop, thread):
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(5)
+    loop.close()  # an unclosed loop is a ResourceWarning, which CI turns into a failure
+
+
 def test_settings_from_config():
     a = make_adapter(calls={"enabled": True, "max_seconds": "120", "greeting": "Hello!", "filler_after": 2})
     assert a._calls_cfg == {
@@ -240,8 +253,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
     import threading
 
     a = make_adapter(calls={"enabled": True})
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
     seen = []
 
     async def place_call(peer, opening, **options):
@@ -255,7 +267,7 @@ def test_tool_places_the_call_on_the_adapter_loop(monkeypatch):
         out = json.loads(adapter._xmpp_call_tool(
             {"opening": "Your backup finished.", "uninterruptible": True, "hang_up_after": "false"}))
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert out == {"success": True, "status": "connected: the call is up"}
     assert seen == [("user@example.org", "Your backup finished.", True,
                      {"uninterruptible": True, "hang_up_after": False, "topic": "", "context": "", "attempts": 1, "pause": None})]
@@ -360,8 +372,7 @@ def test_partner_agent_may_chat_but_never_phone(monkeypatch):
     # with two allowed users, the tool still knows whom to call
     import threading
 
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
     seen = []
 
     async def place_call(peer, opening, **options):
@@ -372,7 +383,7 @@ def test_partner_agent_may_chat_but_never_phone(monkeypatch):
     try:
         out = json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert out["success"] is True and seen == ["user@example.org"]
 
 
@@ -511,8 +522,7 @@ def test_call_request_topic_and_context_reach_the_tool_without_the_model(monkeyp
     a._note_call_request("hello there")  # not a request: nothing changes
     assert a._call_request[1] == "daily-note"
 
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
     seen = []
 
     async def place_call(peer, opening, **options):
@@ -524,7 +534,7 @@ def test_call_request_topic_and_context_reach_the_tool_without_the_model(monkeyp
     try:
         json.loads(adapter._xmpp_call_tool({"opening": "hi"}))
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert seen[0]["topic"] == "daily-note"
     assert "EDIT PLAYBOOK" in seen[0]["context"]
 
@@ -532,8 +542,7 @@ def test_call_request_topic_and_context_reach_the_tool_without_the_model(monkeyp
 def test_xmpp_message_tool_sends_only_to_known_addresses(monkeypatch):
     a = make_adapter(allowed_users="user@example.org", agent_peers=["agent@example.org"],
                      calls={"enabled": True})
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
     sent = []
 
     async def send(chat_id, content, reply_to=None, **kw):
@@ -546,7 +555,7 @@ def test_xmpp_message_tool_sends_only_to_known_addresses(monkeypatch):
         ok = json.loads(adapter._xmpp_message_tool({"to": "Agent@Example.org", "text": "do it"}))
         bad = json.loads(adapter._xmpp_message_tool({"to": "evil@example.org", "text": "hi"}))
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert ok == {"success": True, "status": "sent"}
     assert sent == [("agent@example.org", "do it", "xmpp-message-tool")]
     assert bad["success"] is False and "agent@example.org" in bad["status"]
@@ -641,8 +650,7 @@ def test_world_readable_key_file_is_locked_down(tmp_path):
 
 def test_xmpp_message_tool_is_rate_limited(monkeypatch):
     a = make_adapter(allowed_users="user@example.org", agent_peers=["agent@example.org"], calls={"enabled": True})
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
 
     async def send(chat_id, content, reply_to=None, **kw):
         return types.SimpleNamespace(success=True, error=None)
@@ -652,15 +660,14 @@ def test_xmpp_message_tool_is_rate_limited(monkeypatch):
     try:
         results = [json.loads(adapter._xmpp_message_tool({"to": "user@example.org", "text": str(i)})) for i in range(adapter._MESSAGE_TOOL_LIMIT + 1)]
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert all(r["success"] for r in results[:-1])
     assert results[-1]["success"] is False and "too many" in results[-1]["status"]
 
 
 def test_xmpp_call_tool_refuses_a_long_opening_and_limits_calls(monkeypatch):
     a = make_adapter(allowed_users="user@example.org", calls={"enabled": True})
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=loop.run_forever, daemon=True).start()
+    loop, thread = run_loop_in_thread()
 
     class Controller:
         async def place_call(self, *args, **kwargs):
@@ -676,7 +683,7 @@ def test_xmpp_call_tool_refuses_a_long_opening_and_limits_calls(monkeypatch):
             for _ in range(adapter._CALL_TOOL_LIMIT + 1)
         ]
     finally:
-        loop.call_soon_threadsafe(loop.stop)
+        stop_loop(loop, thread)
     assert all(r["success"] for r in results[:-1])
     assert not results[-1]["success"] and "too many calls" in results[-1]["status"]
 

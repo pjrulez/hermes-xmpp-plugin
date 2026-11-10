@@ -647,7 +647,7 @@ phone and from the bot's host; on a Tailscale network that is an ACL matter (see
 |---|---|
 | Dino (Linux) | Incoming and outgoing calls tested with the bot. Sends no RTP while muted (handled). Silently skips a resource that does not advertise Jingle RTP; the bot advertises it after login. |
 | Conversations (Android) | Incoming and outgoing calls tested with the bot. Needs mutual presence for the call button. |
-| Monal (iOS) | Calls between people work; a bot call with Monal has not been recorded as verified. |
+| Monal (iOS) | Calls with the bot and voice messages tested. Needs mutual presence for the call button. |
 | Others (Gajim, etc.) | Untested. The bot speaks Jingle Message Initiation (XEP-0353) and Jingle RTP with ICE-UDP, DTLS-SRTP and Opus; a client offering those may work, none of the others has been tried. |
 
 #### Privacy

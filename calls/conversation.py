@@ -201,7 +201,8 @@ class Conversation:
         try:
             if path.stat().st_size > MAX_FILLER_BYTES:
                 return None
-            clip = np.load(path, allow_pickle=False)
+            with open(path, "rb") as handle:  # np.load would leave a .npz archive open
+                clip = np.load(handle, allow_pickle=False)
         except Exception:  # missing, empty, truncated, wrong format: the caller makes it again
             return None
         ok = isinstance(clip, np.ndarray) and clip.ndim == 1 and clip.dtype == np.int16

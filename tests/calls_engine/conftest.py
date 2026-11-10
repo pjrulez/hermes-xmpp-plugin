@@ -3,10 +3,14 @@
 They need the optional call dependencies; without aiortc/av/numpy/webrtcvad they are skipped.
 """
 
+import asyncio
+import gc
 import importlib.util
 import inspect
+import warnings
 
 import pytest
+import pytest_asyncio
 
 _NEEDED = ("aiortc", "av", "numpy", "webrtcvad")
 collect_ignore_glob = [] if all(importlib.util.find_spec(m) for m in _NEEDED) else ["test_*.py"]
@@ -17,3 +21,17 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if "calls_engine" in str(item.path) and inspect.iscoroutinefunction(getattr(item, "function", None)):
             item.add_marker(pytest.mark.asyncio)
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _let_transports_close():
+    """asyncio closes a transport's socket one loop turn after `close()`; a test that ends right
+    after closing a peer would otherwise leave that to the garbage collector (ResourceWarning)."""
+    yield
+    for _ in range(5):
+        await asyncio.sleep(0.02)
+    # aioice and aiortc leave a few sockets/tasks for the collector; collect them here, inside
+    # this test, so a warning about them never lands in a later, unrelated test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gc.collect()
