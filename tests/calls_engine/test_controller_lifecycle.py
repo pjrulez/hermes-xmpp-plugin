@@ -29,6 +29,7 @@ def iq(jingle, sender=PEER):
 
 
 @pytest.mark.parametrize("action", ["content-add", "transport-replace", "bogus"])
+@pytest.mark.asyncio
 async def test_unsupported_iq_action_gets_one_error_without_ending_call(action):
     ctl, client = make()
     caller, offer, _ = await make_offer("supported")
@@ -51,6 +52,7 @@ async def test_unsupported_iq_action_gets_one_error_without_ending_call(action):
 
 
 @pytest.mark.parametrize("sender", [PEER, "stranger@example.org/res"])
+@pytest.mark.asyncio
 async def test_unknown_session_and_unauthorized_iq_get_one_error(sender):
     ctl, client = make()
     stanza, replies = iq(Jingle("transport-info", "missing"), sender)
@@ -64,6 +66,7 @@ async def test_unknown_session_and_unauthorized_iq_get_one_error(sender):
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_malformed_transport_iq_gets_one_error_without_ending_call():
     ctl, client = make()
     caller, offer, _ = await make_offer("malformed")
@@ -87,6 +90,7 @@ async def test_malformed_transport_iq_gets_one_error_without_ending_call():
         await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_illegal_accept_gets_out_of_order_error_and_preserves_call():
     ctl, client = make()
     caller, offer, _ = await make_offer("active")
@@ -106,6 +110,7 @@ async def test_illegal_accept_gets_out_of_order_error_and_preserves_call():
 
 
 @pytest.mark.parametrize("extra_media", ["video", "audio"])
+@pytest.mark.asyncio
 async def test_multi_content_offer_is_explicitly_refused(extra_media):
     ctl, client = make()
     caller, offer, _ = await make_offer("multi")
@@ -125,6 +130,7 @@ async def test_multi_content_offer_is_explicitly_refused(extra_media):
 
 
 @pytest.mark.parametrize("retract_first", [False, True])
+@pytest.mark.asyncio
 async def test_retracted_proposal_cannot_be_replayed_or_initiated(retract_first):
     ctl, client = make()
     caller, offer, _ = await make_offer("p1")
@@ -152,6 +158,7 @@ async def test_retracted_proposal_cannot_be_replayed_or_initiated(retract_first)
         ("sent", "bot@example.org", []),
     ],
 )
+@pytest.mark.asyncio
 async def test_received_jmi_carbons_require_authenticated_wrapper(
     monkeypatch, wrapper, sender, expected
 ):
@@ -181,6 +188,7 @@ async def test_received_jmi_carbons_require_authenticated_wrapper(
 
 
 @pytest.mark.parametrize("malformation", ["missing-id", "video"])
+@pytest.mark.asyncio
 async def test_invalid_jmi_proposal_is_not_proceeded(malformation):
     ctl, client = make()
     message = propose()
@@ -192,6 +200,7 @@ async def test_invalid_jmi_proposal_is_not_proceeded(malformation):
     assert not any(verb in ("accept", "proceed") for _, verb in client.jmi_sent())
 
 
+@pytest.mark.asyncio
 async def test_old_carbon_forwarding_delay_does_not_ring():
     ctl, client = make()
     stamp = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
@@ -209,6 +218,7 @@ async def test_old_carbon_forwarding_delay_does_not_ring():
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_old_delayed_proposal_is_ignored():
     ctl, client = make()
     message = propose()
@@ -218,6 +228,7 @@ async def test_old_delayed_proposal_is_ignored():
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_proposal_tombstones_are_bounded():
     ctl, client = make()
     for index in range(1024):
@@ -229,6 +240,7 @@ async def test_proposal_tombstones_are_bounded():
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_duplicate_proposal_is_only_proceeded_once():
     ctl, client = make()
     await ctl._on_jmi(propose())
@@ -236,6 +248,7 @@ async def test_duplicate_proposal_is_only_proceeded_once():
     assert [verb for _, verb in client.jmi_sent()] == ["accept", "proceed"]
 
 
+@pytest.mark.asyncio
 async def test_incoming_sid_cannot_collide_with_outgoing_proposal():
     ctl, client = make()
     ctl.config = CallConfig(max_calls=2)
@@ -255,6 +268,7 @@ async def test_incoming_sid_cannot_collide_with_outgoing_proposal():
         await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_duplicate_initiate_does_not_end_existing_call() -> None:
     ctl, client = make()
     caller, offer, _ = await make_offer("duplicate")
@@ -271,6 +285,7 @@ async def test_duplicate_initiate_does_not_end_existing_call() -> None:
 
 
 @pytest.mark.parametrize("signal", ["session-terminate", "transport-info"])
+@pytest.mark.asyncio
 async def test_incoming_signal_during_turn_fetch_is_not_lost(monkeypatch, signal) -> None:
     ctl, client = make()
     fetching, release = asyncio.Event(), asyncio.Event()
@@ -312,6 +327,7 @@ async def test_incoming_signal_during_turn_fetch_is_not_lost(monkeypatch, signal
         await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_terminate_during_answer_releases_early_candidate_handler(monkeypatch):
     ctl, client = make()
     entered = asyncio.Event()
@@ -350,6 +366,7 @@ async def test_terminate_during_answer_releases_early_candidate_handler(monkeypa
 
 
 @pytest.mark.parametrize("stage", ["incoming-answer", "outgoing-turn", "outgoing-offer"])
+@pytest.mark.asyncio
 async def test_close_cancels_media_setups(monkeypatch, stage):
     ctl, client = make()
     entered, cancelled = asyncio.Event(), asyncio.Event()
@@ -399,6 +416,7 @@ async def test_close_cancels_media_setups(monkeypatch, stage):
 
 
 @pytest.mark.parametrize("waiting", ["busy", "pause"])
+@pytest.mark.asyncio
 async def test_close_wakes_outgoing_busy_and_retry_waits(waiting):
     ctl, client = make()
     caller = None
@@ -427,6 +445,7 @@ async def test_close_wakes_outgoing_busy_and_retry_waits(waiting):
             await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_retry_checks_line_again_before_proposing():
     ctl, client = make()
     ctl.config = CallConfig(ring_timeout=0, ring_attempts=2, ring_pause=0.1)
@@ -446,6 +465,7 @@ async def test_retry_checks_line_again_before_proposing():
         await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_cancelling_outgoing_call_uses_xep_cancel_reason():
     ctl, client = make()
     task, _ = await outgoing(ctl, client)
@@ -467,6 +487,7 @@ async def outgoing(ctl, client):
 
 
 @pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.asyncio
 async def test_remote_terminate_wakes_outgoing_wait_without_missed_call(monkeypatch, accepted):
     ctl, client = make()
 
@@ -496,6 +517,7 @@ async def test_remote_terminate_wakes_outgoing_wait_without_missed_call(monkeypa
 
 
 @pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.asyncio
 async def test_close_wakes_outgoing_acceptance_and_connection_waits(monkeypatch, accepted):
     ctl, client = make()
 
@@ -526,6 +548,7 @@ async def eventually(predicate) -> None:
 
 
 @pytest.mark.parametrize("ring_timeout", [0, 60])
+@pytest.mark.asyncio
 async def test_close_releases_ringing_and_ignores_late_proceed(ring_timeout) -> None:
     ctl, client = make()
     ctl.config = CallConfig(ring_timeout=ring_timeout)
@@ -551,6 +574,7 @@ async def test_close_releases_ringing_and_ignores_late_proceed(ring_timeout) -> 
         await ctl.close()
 
 
+@pytest.mark.asyncio
 async def test_close_during_incoming_turn_fetch_cancels_setup(monkeypatch) -> None:
     ctl, client = make()
     fetching = asyncio.Event()

@@ -68,6 +68,7 @@ async def settle(convo: Conversation) -> None:
         await asyncio.wait({convo._task}, timeout=0.3)
 
 
+@pytest.mark.asyncio
 async def test_turn_is_transcribed_answered_and_spoken() -> None:
     speech, replies = FakeSpeech(), []
 
@@ -92,6 +93,7 @@ async def test_turn_is_transcribed_answered_and_spoken() -> None:
     assert convo.playback.busy
 
 
+@pytest.mark.asyncio
 async def test_empty_transcript_makes_no_turn() -> None:
     called = []
 
@@ -114,6 +116,7 @@ async def test_empty_transcript_makes_no_turn() -> None:
     assert called == []
 
 
+@pytest.mark.asyncio
 async def test_hangup_marker_is_not_spoken_and_ends_call() -> None:
     speech, ended = FakeSpeech(), []
 
@@ -140,6 +143,7 @@ async def test_hangup_marker_is_not_spoken_and_ends_call() -> None:
     assert all("hangup" not in s for s in speech.spoken)
 
 
+@pytest.mark.asyncio
 async def test_barge_in_flushes_audio_and_notes_heard_fraction() -> None:
     speech, seen = FakeSpeech(), []
 
@@ -176,6 +180,7 @@ def test_heard_fraction_math() -> None:
     assert turn.heard_fraction(2100) == 1
 
 
+@pytest.mark.asyncio
 async def test_muted_client_still_ends_the_utterance() -> None:
     """Dino sends no RTP while muted; silence must come from the clock."""
     replies = []
@@ -200,6 +205,7 @@ async def test_muted_client_still_ends_the_utterance() -> None:
     assert replies == ["hello there"]
 
 
+@pytest.mark.asyncio
 async def test_slow_agent_gets_a_filler() -> None:
     speech = FakeSpeech()
 
@@ -224,6 +230,7 @@ async def test_slow_agent_gets_a_filler() -> None:
     assert speech.spoken[1].startswith("The answer")
 
 
+@pytest.mark.asyncio
 async def test_pause_mid_thought_is_joined_not_forgotten() -> None:
     """Two utterances close together, no reply yet: the agent is asked once with both."""
     sizes: list[int] = []
@@ -258,6 +265,7 @@ async def test_pause_mid_thought_is_joined_not_forgotten() -> None:
     assert sizes[-1] > sizes[0] * 1.8  # the last transcription heard both utterances
 
 
+@pytest.mark.asyncio
 async def test_utterance_end_plays_the_ack_tone() -> None:
     async def respond(text: str) -> str:
         await asyncio.sleep(5)
@@ -280,6 +288,7 @@ async def test_utterance_end_plays_the_ack_tone() -> None:
     convo.stop()
 
 
+@pytest.mark.asyncio
 async def test_failed_speech_falls_back_to_text() -> None:
     posted: list[str] = []
 
@@ -310,6 +319,7 @@ async def test_failed_speech_falls_back_to_text() -> None:
     assert posted == ["This reply cannot be spoken, sadly."]
 
 
+@pytest.mark.asyncio
 async def test_protected_speech_ignores_the_caller_until_finished() -> None:
     """A briefing is delivered whole: no barge-in, no turn, no beep, whatever the caller says."""
     replies: list[str] = []
@@ -343,6 +353,7 @@ async def test_protected_speech_ignores_the_caller_until_finished() -> None:
     assert replies == []
 
 
+@pytest.mark.asyncio
 async def test_unprotected_say_can_be_interrupted() -> None:
     convo = Conversation(
         FakeSpeech(),
@@ -358,6 +369,7 @@ async def test_unprotected_say_can_be_interrupted() -> None:
     assert not convo.playback.busy or convo._ack is not None
 
 
+@pytest.mark.asyncio
 async def test_synthesis_is_retried_when_the_queue_is_full() -> None:
     attempts: list[str] = []
 
@@ -374,6 +386,7 @@ async def test_synthesis_is_retried_when_the_queue_is_full() -> None:
     assert convo.playback.busy
 
 
+@pytest.mark.asyncio
 async def test_failed_sentence_posts_the_rest_as_text() -> None:
     """The 'brief me' bug: one sentence failed and the briefing silently stopped."""
     posted: list[str] = []
@@ -401,6 +414,7 @@ async def test_failed_sentence_posts_the_rest_as_text() -> None:
     assert posted == ["The third sentence cannot be made. The fourth sentence follows after it."]
 
 
+@pytest.mark.asyncio
 async def test_prepare_synthesizes_one_sentence_at_a_time() -> None:
     running = peak = 0
 
@@ -423,6 +437,7 @@ async def test_prepare_synthesizes_one_sentence_at_a_time() -> None:
     assert len(convo.playback._buf) == 3 * 4800
 
 
+@pytest.mark.asyncio
 async def test_queue_mode_does_not_cut_the_agent_off_and_answers_afterwards() -> None:
     """Talking while the agent speaks: its audio keeps playing, your words become the next turn."""
     said: list[str] = []
@@ -462,6 +477,7 @@ async def test_queue_mode_does_not_cut_the_agent_off_and_answers_afterwards() ->
     convo.stop()
 
 
+@pytest.mark.asyncio
 async def test_queue_mode_steers_a_turn_that_is_still_thinking() -> None:
     steered: list[str] = []
     release = asyncio.Event()
@@ -491,6 +507,7 @@ async def test_queue_mode_steers_a_turn_that_is_still_thinking() -> None:
     convo.stop()
 
 
+@pytest.mark.asyncio
 async def test_planned_hangup_warns_and_waits_for_speech() -> None:
     from calls.audio import warn_tone
 
@@ -510,6 +527,7 @@ async def test_planned_hangup_warns_and_waits_for_speech() -> None:
     assert await convo.grace(0) is False  # grace 0 turns the warning off
 
 
+@pytest.mark.asyncio
 async def test_goodbye_waits_out_the_grace_time_before_hanging_up() -> None:
     ended: list[bool] = []
 
@@ -537,6 +555,7 @@ async def test_goodbye_waits_out_the_grace_time_before_hanging_up() -> None:
     assert ended == [True]
 
 
+@pytest.mark.asyncio
 async def test_calling_back_after_a_missed_call_tells_the_agent() -> None:
     seen: list[str] = []
 
@@ -558,6 +577,7 @@ async def test_calling_back_after_a_missed_call_tells_the_agent() -> None:
     assert "Your backup finished." in seen[0]
 
 
+@pytest.mark.asyncio
 async def test_noise_during_the_hangup_grace_does_not_keep_the_call_open(monkeypatch) -> None:
     async def respond(text: str) -> str:
         return "x"
@@ -575,6 +595,7 @@ async def test_noise_during_the_hangup_grace_does_not_keep_the_call_open(monkeyp
     assert await convo.grace(0.3) is False  # so the call still ends
 
 
+@pytest.mark.asyncio
 async def test_hanging_up_mid_request_still_gets_the_request_handled() -> None:
     """The caller says something, the agent starts working, they hang up: the work finishes
     and the answer arrives as text; nothing is spoken."""
@@ -610,6 +631,7 @@ async def test_hanging_up_mid_request_still_gets_the_request_handled() -> None:
     assert not convo.playback.busy  # nothing was spoken after the hang-up
 
 
+@pytest.mark.asyncio
 async def test_hanging_up_while_still_talking_handles_what_was_said() -> None:
     texts: list[str] = []
 
@@ -636,6 +658,7 @@ async def test_hanging_up_while_still_talking_handles_what_was_said() -> None:
     assert texts == ["Noted."]
 
 
+@pytest.mark.asyncio
 async def test_idle_for_counts_silence_but_not_work_or_playback() -> None:
     async def respond(text: str) -> str:
         return "x"
@@ -655,6 +678,7 @@ async def test_idle_for_counts_silence_but_not_work_or_playback() -> None:
     assert convo.idle_for() > 99
 
 
+@pytest.mark.asyncio
 async def test_what_was_said_stays_out_of_the_log_unless_asked(caplog) -> None:
     import logging
 
@@ -689,6 +713,7 @@ async def test_what_was_said_stays_out_of_the_log_unless_asked(caplog) -> None:
     assert "caller: my secret words" in caplog.text
 
 
+@pytest.mark.asyncio
 async def test_waiting_for_dead_media_gives_up() -> None:
     from calls.audio import PlaybackTrack
 
@@ -719,6 +744,7 @@ def _filler_convo(speech, tmp_path, fillers=("One moment.",)):
     )
 
 
+@pytest.mark.asyncio
 async def test_filler_audio_is_made_once_and_reused_across_calls(tmp_path) -> None:
     for _ in range(2):  # two calls, each with its own Conversation
         speech = FakeSpeech()
@@ -729,6 +755,7 @@ async def test_filler_audio_is_made_once_and_reused_across_calls(tmp_path) -> No
     assert len(list((tmp_path / "cache").glob("filler-*.npy"))) == 1
 
 
+@pytest.mark.asyncio
 async def test_damaged_filler_file_is_made_again(tmp_path) -> None:
     speech = FakeSpeech()
     convo = _filler_convo(speech, tmp_path)
@@ -743,6 +770,7 @@ async def test_damaged_filler_file_is_made_again(tmp_path) -> None:
     assert again.spoken[0] == "One moment."
 
 
+@pytest.mark.asyncio
 async def test_empty_filler_says_nothing_and_caches_nothing(tmp_path) -> None:
     speech = FakeSpeech()
     convo = _filler_convo(speech, tmp_path, fillers=())
@@ -752,6 +780,7 @@ async def test_empty_filler_says_nothing_and_caches_nothing(tmp_path) -> None:
     assert not (tmp_path / "cache").exists()
 
 
+@pytest.mark.asyncio
 async def test_fillers_are_picked_at_random_and_never_repeat_back_to_back(tmp_path) -> None:
     speech = FakeSpeech()
     convo = _filler_convo(speech, tmp_path, fillers=("One moment.", "Hold on.", "Let me see."))
@@ -779,6 +808,7 @@ async def _pick(convo) -> str:
     ],
     ids=["empty", "zip", "absurd-shape"],
 )
+@pytest.mark.asyncio
 async def test_any_damaged_filler_file_is_replaced(tmp_path, damage) -> None:
     speech = FakeSpeech()
     convo = _filler_convo(speech, tmp_path)
@@ -793,6 +823,7 @@ async def test_any_damaged_filler_file_is_replaced(tmp_path, damage) -> None:
     assert [p.name for p in (tmp_path / "cache").iterdir()] == [path.name]
 
 
+@pytest.mark.asyncio
 async def test_a_ready_answer_does_not_wait_for_a_slow_filler(tmp_path) -> None:
     class SlowFiller(FakeSpeech):
         async def synthesize(self, text: str) -> np.ndarray:

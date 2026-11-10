@@ -1,6 +1,7 @@
 """Whole answer path without XMPP: an aiortc caller sends a tone through our Jingle/SDP bridge
 and CallMedia echoes it back. Conversations-style: the caller's candidates are trickled."""
 
+import pytest
 import asyncio
 from dataclasses import replace
 from typing import cast
@@ -16,6 +17,7 @@ from calls.jingle.sdp import offer_to_sdp
 from calls.media import CallMedia
 
 
+@pytest.mark.asyncio
 async def test_tone_is_echoed_with_trickled_candidates() -> None:
     caller, offer, trickled = await make_offer()
     heard: list[np.ndarray] = []

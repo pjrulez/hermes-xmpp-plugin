@@ -1,6 +1,7 @@
 """Outgoing-call media: the offerer must hear the answerer (regression: its receiving track
 only exists after the answer is applied, so the call listener once got None)."""
 
+import pytest
 import asyncio
 
 from aiortc.mediastreams import MediaStreamTrack
@@ -10,6 +11,7 @@ from calls.jingle.model import Jingle
 from calls.media import CallMedia
 
 
+@pytest.mark.asyncio
 async def test_offerer_receives_audio_from_the_answerer() -> None:
     heard = {"frames": 0}
 

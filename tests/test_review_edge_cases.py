@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import importlib
 import json
 import os
@@ -50,6 +51,11 @@ def load_adapter(reload_module=None):
 
 
 adapter = load_adapter()
+
+
+needs_numpy = pytest.mark.skipif(
+    importlib.util.find_spec("numpy") is None, reason="the call dependencies are not installed"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -351,6 +357,7 @@ def live_tools(monkeypatch):
         loop.close()
 
 
+@needs_numpy
 @pytest.mark.parametrize(
     "target", ["USER@EXAMPLE.ORG", " user@example.org ", " User@Example.org/Phone "]
 )
@@ -361,6 +368,7 @@ def test_call_tool_normalizes_target_before_host_authorization(live_tools, targe
     assert seen[0][0] == "user@example.org"
 
 
+@needs_numpy
 @pytest.mark.parametrize(
     "target", ["USER@EXAMPLE.ORG", " user@example.org ", " User@Example.org/Phone "]
 )
@@ -371,6 +379,7 @@ def test_message_tool_uses_the_same_normalized_recipient(live_tools, target):
     assert instance.send.await_args.kwargs["chat_id"] == "user@example.org"
 
 
+@needs_numpy
 def test_call_tool_nonfinite_overrides_use_safe_defaults(live_tools):
     _, seen = live_tools
     result = json.loads(
@@ -387,6 +396,7 @@ def test_call_tool_nonfinite_overrides_use_safe_defaults(live_tools):
     assert seen[0][1]["pause"] is None
 
 
+@needs_numpy
 def test_tools_still_refuse_normalized_unknown_targets(live_tools):
     instance, seen = live_tools
     target = " Stranger@Example.org/Phone "

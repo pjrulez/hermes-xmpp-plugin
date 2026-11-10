@@ -1,5 +1,6 @@
 """CallController with a fake slixmpp client and host, and a real aiortc caller."""
 
+import pytest
 import asyncio
 import re
 from types import SimpleNamespace
@@ -123,18 +124,21 @@ def test_install_registers_handlers() -> None:
     assert (len(client._handlers) if hasattr(client, "_handlers") else 3) > before
 
 
+@pytest.mark.asyncio
 async def test_propose_from_authorized_peer_is_accepted_and_proceeded() -> None:
     ctl, client = make()
     await ctl._on_jmi(propose())
     assert client.jmi_sent() == [("bot@example.org", "accept"), (PEER, "proceed")]
 
 
+@pytest.mark.asyncio
 async def test_propose_from_stranger_is_ignored() -> None:
     ctl, client = make()
     await ctl._on_jmi(propose("evil@example.org/x"))
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_propose_while_busy_is_rejected() -> None:
     ctl, client = make()
     ctl.calls["other"] = object()  # type: ignore[assignment]
@@ -142,6 +146,7 @@ async def test_propose_while_busy_is_rejected() -> None:
     assert client.jmi_sent() == [("alice@example.org", "reject")]
 
 
+@pytest.mark.asyncio
 async def test_call_lifecycle() -> None:
     ctl, client = make()
     caller, offer, _ = await make_offer("s1")
@@ -157,6 +162,7 @@ async def test_call_lifecycle() -> None:
     await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_mute_ends_the_utterance() -> None:
     ctl, _ = make()
     caller, offer, _ = await make_offer("s2")
@@ -169,6 +175,7 @@ async def test_mute_ends_the_utterance() -> None:
     await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_second_call_gets_busy() -> None:
     ctl, client = make()
     first, offer1, _ = await make_offer("a")
@@ -182,6 +189,7 @@ async def test_second_call_gets_busy() -> None:
     await second.close()
 
 
+@pytest.mark.asyncio
 async def test_offer_without_dtls_is_refused_with_security_error() -> None:
     ctl, client = make()
     caller, offer, _ = await make_offer("s3")
@@ -197,6 +205,7 @@ async def test_offer_without_dtls_is_refused_with_security_error() -> None:
     await caller.close()
 
 
+@pytest.mark.asyncio
 async def test_close_hangs_up_open_calls() -> None:
     ctl, client = make()
     caller, offer, _ = await make_offer("s4")
@@ -245,6 +254,7 @@ async def _run_outgoing(**options: Any) -> tuple[CallController, FakeClient, str
     return ctl, client, result, phone, spoken
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_rings_offers_and_speaks_the_opening() -> None:
     ctl, _, result, phone, spoken = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -257,6 +267,7 @@ async def test_outgoing_call_rings_offers_and_speaks_the_opening() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_uninterruptible_opening_is_protected_while_it_plays() -> None:
     ctl, _, _, phone, _ = await _run_outgoing(uninterruptible=True)
     sid = next(iter(ctl.calls))
@@ -269,6 +280,7 @@ async def test_uninterruptible_opening_is_protected_while_it_plays() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_hang_up_after_ends_the_call_when_the_opening_is_done() -> None:
     ctl, client, _, phone, _ = await _run_outgoing(hang_up_after=True)
     sid = next(iter(ctl.calls))
@@ -287,6 +299,7 @@ async def test_hang_up_after_ends_the_call_when_the_opening_is_done() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_not_answered_is_retracted() -> None:
     ctl, client = make()
     ctl.config = CallConfig(ring_timeout=0, ring_attempts=2, ring_pause=0)
@@ -306,6 +319,7 @@ async def test_outgoing_call_not_answered_is_retracted() -> None:
     assert ctl._missed == {"alice@example.org": "Hello"}  # and remembered for a call back
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_declined() -> None:
     ctl, client = make()
     ctl.config = CallConfig(ring_attempts=1)
@@ -317,12 +331,14 @@ async def test_outgoing_call_declined() -> None:
     assert "Hello" in ctl.host.texts[0][1]  # type: ignore[attr-defined]
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_to_stranger_is_refused() -> None:
     ctl, client = make()
     assert (await ctl.place_call("evil@example.org", "Hi")).startswith("refused")
     assert client.sent == []
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_while_busy() -> None:
     ctl, _ = make()
     ctl.config = CallConfig(busy_wait=0.3)
@@ -330,6 +346,7 @@ async def test_outgoing_call_while_busy() -> None:
     assert (await ctl.place_call("alice@example.org", "Hi")).startswith("busy")
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_waits_for_the_current_call_to_end() -> None:
     ctl, client = make()
     ctl.calls["x"] = SimpleNamespace(peer="other@example.org/res")  # type: ignore[assignment]
@@ -355,6 +372,7 @@ async def _record(spoken: list[str], text: str) -> np.ndarray:
     )  # 3 s: long enough that the sender cannot drain it mid-test
 
 
+@pytest.mark.asyncio
 async def test_call_session_gets_a_recognizable_title() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     await asyncio.sleep(0.1)
@@ -363,6 +381,7 @@ async def test_call_session_gets_a_recognizable_title() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_call_title_includes_the_topic() -> None:
     ctl, _, _, phone, _ = await _run_outgoing(topic="example-daily-note")
     await asyncio.sleep(0.1)
@@ -370,6 +389,7 @@ async def test_call_title_includes_the_topic() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_call_with_talk_ends_with_a_text_recap() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -381,6 +401,7 @@ async def test_call_with_talk_ends_with_a_text_recap() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_call_without_talk_has_no_recap() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -390,6 +411,7 @@ async def test_call_without_talk_has_no_recap() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_outgoing_call_to_someone_already_on_a_call_is_said_there() -> None:
     ctl, client, _, phone, spoken = await _run_outgoing()
     before = len(client.sent)
@@ -401,6 +423,7 @@ async def test_outgoing_call_to_someone_already_on_a_call_is_said_there() -> Non
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_a_phone_that_stops_ringing_by_itself_is_rung_again(monkeypatch) -> None:
     import calls.controller as module
 
@@ -419,6 +442,7 @@ async def test_a_phone_that_stops_ringing_by_itself_is_rung_again(monkeypatch) -
     assert len(ctl.host.texts) == 1  # one text at the very end  # type: ignore[attr-defined]
 
 
+@pytest.mark.asyncio
 async def test_hanging_up_does_not_cancel_the_agents_work() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -441,6 +465,7 @@ async def test_hanging_up_does_not_cancel_the_agents_work() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_an_idle_call_says_goodbye_and_ends() -> None:
     ctl, _, _, phone, spoken = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -476,6 +501,7 @@ def test_topic_cannot_smuggle_a_command_into_the_title() -> None:
     assert seen[0].endswith("daily stop now new")
 
 
+@pytest.mark.asyncio
 async def test_another_peers_jingle_stanza_cannot_touch_a_call() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -488,6 +514,7 @@ async def test_another_peers_jingle_stanza_cannot_touch_a_call() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_a_call_whose_media_fails_is_ended() -> None:
     ctl, _, _, phone, _ = await _run_outgoing()
     sid = next(iter(ctl.calls))
@@ -498,6 +525,7 @@ async def test_a_call_whose_media_fails_is_ended() -> None:
     await phone.close()
 
 
+@pytest.mark.asyncio
 async def test_error_reply_to_our_setup_iq_ends_the_call() -> None:
     ctl, _client = make()
     ended: list[tuple[str, str | None]] = []

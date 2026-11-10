@@ -6,21 +6,12 @@ They need the optional call dependencies; without aiortc/av/numpy/webrtcvad they
 import asyncio
 import gc
 import importlib.util
-import inspect
 import warnings
 
-import pytest
 import pytest_asyncio
 
 _NEEDED = ("aiortc", "av", "numpy", "webrtcvad")
 collect_ignore_glob = [] if all(importlib.util.find_spec(m) for m in _NEEDED) else ["test_*.py"]
-
-
-def pytest_collection_modifyitems(items):
-    # the plugin's own pytest config is not asyncio_mode=auto: mark these coroutine tests here
-    for item in items:
-        if "calls_engine" in str(item.path) and inspect.iscoroutinefunction(getattr(item, "function", None)):
-            item.add_marker(pytest.mark.asyncio)
 
 
 @pytest_asyncio.fixture(autouse=True)

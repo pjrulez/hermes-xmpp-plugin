@@ -7,6 +7,7 @@ from contextlib import suppress
 
 import numpy as np
 import pytest
+import pytest_asyncio
 
 from .helpers import energy_endpointer
 from .test_conversation import Caller, FakeSpeech
@@ -27,7 +28,7 @@ async def spins() -> None:
         await asyncio.sleep(0)
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def make_conversation():
     conversations = []
 
@@ -62,6 +63,7 @@ async def make_conversation():
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+@pytest.mark.asyncio
 async def test_queued_words_override_a_goodbye(make_conversation) -> None:
     entered, release = asyncio.Event(), asyncio.Event()
     requests, ended = [], []
@@ -87,6 +89,7 @@ async def test_queued_words_override_a_goodbye(make_conversation) -> None:
     assert convo._queued == []
 
 
+@pytest.mark.asyncio
 async def test_failed_reply_still_drains_queued_words(make_conversation) -> None:
     entered, release = asyncio.Event(), asyncio.Event()
     requests = []
@@ -109,6 +112,7 @@ async def test_failed_reply_still_drains_queued_words(make_conversation) -> None
     assert convo._queued == []
 
 
+@pytest.mark.asyncio
 async def test_rejected_steer_after_turn_finishes_starts_a_new_turn(make_conversation) -> None:
     entered, answer = asyncio.Event(), asyncio.Event()
     steering, reject = asyncio.Event(), asyncio.Event()
@@ -145,6 +149,7 @@ async def test_rejected_steer_after_turn_finishes_starts_a_new_turn(make_convers
 
 @pytest.mark.parametrize("hangup", [False, True])
 @pytest.mark.parametrize("delayed_sentence", [1, 2])
+@pytest.mark.asyncio
 async def test_finish_during_synthesis_posts_the_unspoken_reply(
     make_conversation, hangup: bool, delayed_sentence: int
 ) -> None:
@@ -184,6 +189,7 @@ async def test_finish_during_synthesis_posts_the_unspoken_reply(
     assert ended == []
 
 
+@pytest.mark.asyncio
 async def test_filler_failure_preserves_the_successful_answer(make_conversation) -> None:
     filler = asyncio.Event()
     answer = "The requested action was completed."
@@ -208,6 +214,7 @@ async def test_filler_failure_preserves_the_successful_answer(make_conversation)
 
 
 @pytest.mark.parametrize("barge_in", ["queue", "stop"])
+@pytest.mark.asyncio
 async def test_stop_cancels_pending_transcripts_and_blocks_late_turns(
     make_conversation, barge_in: str
 ) -> None:
@@ -241,6 +248,7 @@ async def test_stop_cancels_pending_transcripts_and_blocks_late_turns(
     assert convo.closed
 
 
+@pytest.mark.asyncio
 async def test_finish_deadline_cancels_and_awaits_owned_work(make_conversation) -> None:
     transcribing, thinking, preparing = asyncio.Event(), asyncio.Event(), asyncio.Event()
     agent_cleaned = asyncio.Event()
@@ -282,6 +290,7 @@ async def test_finish_deadline_cancels_and_awaits_owned_work(make_conversation) 
     assert not convo.playback.busy
 
 
+@pytest.mark.asyncio
 async def test_concurrent_grace_callers_share_the_same_words(
     make_conversation, monkeypatch
 ) -> None:
@@ -314,6 +323,7 @@ def test_disabled_preroll_does_not_keep_silence(preroll_ms: int) -> None:
     np.testing.assert_array_equal(utterance.pcm, PCM)
 
 
+@pytest.mark.asyncio
 async def test_long_reply_is_backpressured_without_gaps_or_truncation(make_conversation) -> None:
     parts = [f"This is sentence number {index} in the long reply." for index in range(80)]
 
@@ -343,6 +353,7 @@ async def test_long_reply_is_backpressured_without_gaps_or_truncation(make_conve
 
 
 @pytest.mark.parametrize("drain", [False, True])
+@pytest.mark.asyncio
 async def test_empty_playback_releases_its_audio(drain: bool) -> None:
     playback = PlaybackTrack()
     playback.play(np.ones(OUT_FRAME, np.int16))
@@ -355,6 +366,7 @@ async def test_empty_playback_releases_its_audio(drain: bool) -> None:
     assert audio() is None
 
 
+@pytest.mark.asyncio
 async def test_preparation_keeps_only_two_sentences_ahead(make_conversation) -> None:
     parts = [f"This is prepared sentence number {index}." for index in range(8)]
 
@@ -374,6 +386,7 @@ async def test_preparation_keeps_only_two_sentences_ahead(make_conversation) -> 
 
 
 @pytest.mark.parametrize("kind", ["filler", "apology"])
+@pytest.mark.asyncio
 async def test_finish_blocks_late_auxiliary_audio(
     make_conversation, monkeypatch, kind: str
 ) -> None:
@@ -416,6 +429,7 @@ async def test_finish_blocks_late_auxiliary_audio(
     assert played == []
 
 
+@pytest.mark.asyncio
 async def test_finish_releases_prepared_audio(make_conversation) -> None:
     convo = make_conversation(lambda text: asyncio.sleep(0, ""), speech=FakeSpeech())
     text = "This sentence was prepared before the caller hung up."
@@ -427,6 +441,7 @@ async def test_finish_releases_prepared_audio(make_conversation) -> None:
     assert audio() is None
 
 
+@pytest.mark.asyncio
 async def test_finish_during_prepared_synthesis_keeps_text_fallback(make_conversation) -> None:
     entered = asyncio.Event()
     reply = "The requested action was completed."
@@ -453,6 +468,7 @@ async def test_finish_during_prepared_synthesis_keeps_text_fallback(make_convers
     assert not convo.playback.busy
 
 
+@pytest.mark.asyncio
 async def test_stop_during_rejected_steer_does_not_requeue_words(make_conversation) -> None:
     thinking, steering = asyncio.Event(), asyncio.Event()
     requests = []
@@ -482,6 +498,7 @@ async def test_stop_during_rejected_steer_does_not_requeue_words(make_conversati
 
 
 @pytest.mark.parametrize("ignore_cancel", [False, True])
+@pytest.mark.asyncio
 async def test_stop_cancels_all_preparations(make_conversation, ignore_cancel: bool) -> None:
     entered = asyncio.Event()
     calls = []
@@ -518,6 +535,7 @@ async def test_stop_cancels_all_preparations(make_conversation, ignore_cancel: b
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+@pytest.mark.asyncio
 async def test_finish_awaits_the_listeners_pending_receive(make_conversation) -> None:
     entered, cleaned = asyncio.Event(), asyncio.Event()
 
@@ -538,6 +556,7 @@ async def test_finish_awaits_the_listeners_pending_receive(make_conversation) ->
     assert cleaned.is_set()
 
 
+@pytest.mark.asyncio
 async def test_finish_also_awaits_a_replaced_turn(make_conversation) -> None:
     entered, cancelling = asyncio.Event(), asyncio.Event()
     calls = []
