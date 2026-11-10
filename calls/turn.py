@@ -10,8 +10,9 @@ EXTDISCO = "urn:xmpp:extdisco:2"
 def parse_services(services: ET.Element) -> list[RTCIceServer]:
     """UDP turn services only. `turns:` and TCP are skipped (our transport is ice-udp).
 
-    STUN is skipped on purpose: from fw the server's STUN gives no answer, and aiortc then waits
-    5 s in setLocalDescription before it answers the call. TURN allocates in ~0.1 s.
+    STUN is skipped on purpose: the server's STUN may give no answer (seen on a tailnet host),
+    and aiortc then waits 5 s in setLocalDescription before it answers the call.
+    TURN allocates in ~0.1 s.
     """
     servers = []
     for service in services.findall(f"{{{EXTDISCO}}}service"):

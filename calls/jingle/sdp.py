@@ -51,7 +51,7 @@ def offer_to_sdp(offer: Jingle) -> str:
     if opus.parameters:
         lines.append(
             f"a=fmtp:{_safe(opus.id)} "
-            + ";".join(f"{_safe(k)}={_fmtp_value(v)}" for k, v in opus.parameters)
+            + ";".join(f"{_fmtp_name(k)}={_fmtp_value(v)}" for k, v in opus.parameters)
         )
     lines += [
         f"a=candidate:{candidate_to_sdp(c)}"
@@ -61,7 +61,8 @@ def offer_to_sdp(offer: Jingle) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
-_SAFE = re.compile(r"[\w+/:=.,;-]*")
+_SAFE = re.compile(r"[\w+/:=.,;-]*", re.ASCII)
+_PARAM = re.compile(r"[\w+/:.,-]+", re.ASCII)  # one fmtp name or value: no `;` or `=` to split on
 MAX_CANDIDATES = 16  # per call: a peer cannot make us probe thousands of addresses
 
 
@@ -74,9 +75,18 @@ def _safe(value: object) -> str:
     return text
 
 
+def _fmtp_name(name: object) -> str:
+    text = _safe(name)
+    if not _PARAM.fullmatch(text):
+        raise JingleError(f"unsafe fmtp name {text[:40]!r}")
+    return text
+
+
 def _fmtp_value(value: object) -> str:
     """Monal writes Opus flags as true/false; SDP and aiortc's parser want 1/0."""
     text = _safe(value)
+    if text and not _PARAM.fullmatch(text):
+        raise JingleError(f"unsafe fmtp value {text[:40]!r}")
     return {"true": "1", "false": "0"}.get(text.lower(), text)
 
 

@@ -6,18 +6,35 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Audio calls (Jingle RTP, aiortc): incoming and outgoing, voice-activity turn taking with
-  beeps, queue/steer/stop barge-in, uninterruptible briefings, hang-up grace, per-call sessions
-  with titles, missed-call text and callback note, post-call recap, `xmpp_call` and `xmpp_message`
-  agent tools, `xmpp.agent_peers`, `xmpp.calls.*` options (see the README).
 - OMEMO key safety: file lock, atomic owner-only writes, no silent reset of an unreadable store;
   the one-shot sender never uses OMEMO.
 - `xmpp.calls.filler`: the "One moment." filler is now a string or list (six built-in phrases,
   picked at random, never twice in a row; `""` turns it off). Each phrase is synthesized once and
-  kept in `<plugin folder>/cache/`.
+  kept in `<HERMES_HOME>/cache/xmpp-calls/`. Calls need Python 3.13 or newer.
 - `xmpp.plaintext_peers`: bare JIDs that never get OMEMO-encrypted messages.
 - `xmpp.calls.allowed_users` and `xmpp.calls.hangup_grace` (warning beeps and a speaking
   window before a planned hang-up).
+
+- **Audio calls (Jingle RTP, optional)**: `xmpp.calls.enabled` lets allowed JIDs call the bot
+  (XEP-0166/0167/0176/0320/0353 over aiortc). Speech goes through the configured `stt` and `tts`
+  providers, replies are normal agent turns, barge-in and a spoken hang-up are supported. Code
+  lives in `calls/`; dependencies are in `requirements-calls.txt`. Off by default. The `xmpp_call` agent tool places an outgoing call (also usable from cron jobs).
+- **Inbound voice notes → Hermes STT**: a message that is exactly one audio
+  attachment and no text (XEP-0066 OOB, XEP-0447 SFS with an `audio/*`
+  media type, or an OMEMO `aesgcm://` link per XEP-0454) is downloaded into
+  Hermes' audio cache and dispatched as a `MessageType.VOICE` event, so the
+  gateway transcribes it with the operator's configured `stt` provider
+  (local or remote) and uses the transcript as the prompt. Fetching reuses
+  Hermes core's SSRF-safe client and inbound media size cap; authorization
+  runs before any download. Captioned/multi-file/non-audio messages are
+  unchanged. Toggle with `voice_transcription` / `XMPP_VOICE_TRANSCRIPTION`
+  (default on). If the download fails the message falls back to the
+  previous plain-text behaviour.
+- **`voice_trusted_hosts`** (`XMPP_VOICE_TRUSTED_HOSTS`): upload hosts that
+  may resolve to LAN/tailnet addresses when fetching voice notes, without
+  turning on Hermes' global `allow_private_urls`. Defaults to the bot's own
+  XMPP domain and its subdomains; https-only, no redirects, metadata floor
+  and size cap kept. Other hosts still get Hermes' full SSRF checks.
 
 ### Fixed
 
@@ -47,29 +64,6 @@ All notable changes to this project will be documented in this file.
 - Withhold encrypted reply keys even when fallback stripping removes the URL
   scheme. Public redirects remain HTTPS and revalidate address policy without
   buffering redirect bodies or blocking the gateway event loop.
-
-### Added
-
-- **Audio calls (Jingle RTP, optional)**: `xmpp.calls.enabled` lets allowed JIDs call the bot
-  (XEP-0166/0167/0176/0320/0353 over aiortc). Speech goes through the configured `stt` and `tts`
-  providers, replies are normal agent turns, barge-in and a spoken hang-up are supported. Code
-  lives in `calls/`; dependencies are in `requirements-calls.txt`. Off by default. The `xmpp_call` agent tool places an outgoing call (also usable from cron jobs).
-- **Inbound voice notes → Hermes STT**: a message that is exactly one audio
-  attachment and no text (XEP-0066 OOB, XEP-0447 SFS with an `audio/*`
-  media type, or an OMEMO `aesgcm://` link per XEP-0454) is downloaded into
-  Hermes' audio cache and dispatched as a `MessageType.VOICE` event, so the
-  gateway transcribes it with the operator's configured `stt` provider
-  (local or remote) and uses the transcript as the prompt. Fetching reuses
-  Hermes core's SSRF-safe client and inbound media size cap; authorization
-  runs before any download. Captioned/multi-file/non-audio messages are
-  unchanged. Toggle with `voice_transcription` / `XMPP_VOICE_TRANSCRIPTION`
-  (default on). If the download fails the message falls back to the
-  previous plain-text behaviour.
-- **`voice_trusted_hosts`** (`XMPP_VOICE_TRUSTED_HOSTS`): upload hosts that
-  may resolve to LAN/tailnet addresses when fetching voice notes, without
-  turning on Hermes' global `allow_private_urls`. Defaults to the bot's own
-  XMPP domain and its subdomains; https-only, no redirects, metadata floor
-  and size cap kept. Other hosts still get Hermes' full SSRF checks.
 
 ## [0.4.0] — Connection reliability, OMEMO, and security fixes
 

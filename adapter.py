@@ -139,6 +139,9 @@ class OmemoStoreError(RuntimeError):
 
 # Keep the process-lifetime descriptors reachable across adapter reloads/reimports.
 _OMEMO_LOCKS: dict[str, int] = sys.__dict__.setdefault("_hermes_xmpp_omemo_locks", {})
+# The key data per store: a second storage object for the same file in this process (a reconnect
+# that overlaps the old client) shares it, so neither can overwrite the other's newer keys.
+_OMEMO_DATA: dict[str, dict[str, Any]] = sys.__dict__.setdefault("_hermes_xmpp_omemo_data", {})
 
 
 def _lock_omemo_store(path: Path) -> None:
@@ -179,7 +182,9 @@ if SLIXMPP_OMEMO_AVAILABLE:
             self._path = json_file_path.resolve()
             self._data: Dict[str, Any] = {}
             _lock_omemo_store(self._path)
-            if self._path.exists() and self._path.stat().st_size:
+            if (shared := _OMEMO_DATA.get(os.path.realpath(self._path))) is not None:
+                self._data = shared
+            elif self._path.exists() and self._path.stat().st_size:
                 try:
                     with open(self._path, encoding="utf-8") as f:
                         self._data = json.load(f)
@@ -192,6 +197,7 @@ if SLIXMPP_OMEMO_AVAILABLE:
                         "Restore a backup or move the file away to start fresh."
                     ) from exc
                 self._path.chmod(0o600)  # private keys
+            _OMEMO_DATA.setdefault(os.path.realpath(self._path), self._data)
 
         async def _load(self, key: str) -> Any:  # type: ignore[override]
             if key in self._data:
@@ -969,7 +975,7 @@ class XmppAdapter(BasePlatformAdapter):
                 greeting=self._calls_cfg["greeting"],
                 filler_after=self._calls_cfg["filler_after"],
                 **({"fillers": self._calls_cfg["filler"]} if self._calls_cfg["filler"] is not None else {}),
-                filler_cache=Path(__file__).resolve().parent / "cache",
+                filler_cache=Path(_hermes_home()) / "cache" / "xmpp-calls",
                 ring_timeout=self._calls_cfg["ring_timeout"],
                 silence_ms=self._calls_cfg["silence_ms"],
                 vad_level=self._calls_cfg["vad_level"],
@@ -3206,7 +3212,7 @@ def _calls_settings(extra: Any) -> Dict[str, Any]:
     return {
         "enabled": _truthy(raw.get("enabled", _scoped_getenv("XMPP_CALLS_ENABLED", "false"))),
         "max_seconds": number("max_seconds", 600, int, 1),
-        "greeting": str(raw.get("greeting", _CALL_GREETING)),
+        "greeting": str(raw.get("greeting", _CALL_GREETING) or ""),
         "filler_after": number("filler_after", 3.0, float, 0),
         "filler": _fillers(raw.get("filler")),
         "ring_timeout": number("ring_timeout", 60, int, 1),
@@ -3236,7 +3242,10 @@ def _fillers(value: Any) -> tuple[str, ...] | None:
     if value is None:
         return None
     items = value if isinstance(value, (list, tuple)) else [value]
-    return tuple(p for item in items if (p := str(item).strip()))
+    phrases = tuple(p for item in items if isinstance(item, str) and (p := item.strip()))
+    if len(phrases) != len([i for i in items if i is not False]) or len(phrases) > 20:
+        logger.warning("xmpp: calls.filler takes up to 20 non-empty strings; ignoring the rest")
+    return tuple(p[:200] for p in phrases[:20])
 
 
 def _csv(value: Any) -> str:

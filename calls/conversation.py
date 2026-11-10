@@ -6,8 +6,10 @@ import hashlib
 import logging
 import os
 import random
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -35,6 +37,7 @@ FILLERS = (
     "Give me a moment.",
     "Bear with me.",
 )
+MAX_FILLER_BYTES = 20_000_000  # a cached phrase is a few hundred kB; refuse anything absurd
 GAP_S = 0.1  # no RTP for this long: the clock, not packets, advances endpointing
 
 
@@ -196,21 +199,30 @@ class Conversation:
     @staticmethod
     def _load_clip(path: Path) -> np.ndarray | None:
         try:
+            if path.stat().st_size > MAX_FILLER_BYTES:
+                return None
             clip = np.load(path, allow_pickle=False)
-        except OSError, ValueError:
-            return None  # missing or damaged: the caller makes it again
-        return clip if clip.ndim == 1 and clip.dtype == np.int16 and clip.size else None
+        except Exception:  # missing, empty, truncated, wrong format: the caller makes it again
+            return None
+        ok = isinstance(clip, np.ndarray) and clip.ndim == 1 and clip.dtype == np.int16
+        return clip if ok and clip.size else None
 
     @staticmethod
     def _save_clip(path: Path, clip: np.ndarray) -> None:
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp = None
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp, "wb") as handle:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name, suffix=".tmp")
+            with os.fdopen(fd, "wb") as handle:
                 np.save(handle, clip, allow_pickle=False)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp, path)
         except OSError:
             logging.warning("calls: could not save the filler audio to %s", path)
+            if tmp is not None:
+                with suppress(OSError):
+                    os.unlink(tmp)
 
     async def _synth(self, text: str) -> np.ndarray:
         return await retry(lambda: self.speech.synthesize(text))
@@ -514,21 +526,28 @@ class Conversation:
     async def _answer(self, text: str) -> str:
         """Ask the agent; if it is slow, say a short filler so the line is not dead."""
         reply = asyncio.ensure_future(self.respond(text))
+        filler: asyncio.Task[None] | None = None
         self._thinking = True
         try:
             done, _ = await asyncio.wait({reply}, timeout=self.filler_after)
             if not done and not self.closed and self.fillers:
-                try:
-                    clip = await self._filler_clip()
-                    if not self.closed:
-                        self.playback.play(clip)
-                except Exception:
-                    logging.exception("filler synthesis failed; still waiting for the answer")
+                # its own task: an answer that is ready never waits for the filler
+                filler = asyncio.create_task(self._say_filler(reply))
             return await reply
         finally:
             self._thinking = False
             reply.cancel()  # no-op when finished; stops the agent call on barge-in
-            await asyncio.gather(reply, return_exceptions=True)
+            if filler is not None:
+                filler.cancel()
+            await asyncio.gather(reply, *([filler] if filler else []), return_exceptions=True)
+
+    async def _say_filler(self, reply: asyncio.Future[str]) -> None:
+        try:
+            clip = await self._filler_clip()
+            if not self.closed and not reply.done():
+                self.playback.play(clip)
+        except Exception:
+            logging.exception("filler synthesis failed; still waiting for the answer")
 
     async def _speak(self, turn: Turn) -> None:
         """Queue every sentence of `turn` for playback. A sentence that cannot be synthesized

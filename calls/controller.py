@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from xml.etree import ElementTree as ET
 
-from slixmpp.exceptions import XMPPError
+from slixmpp.exceptions import IqError, XMPPError
 
 from . import turn
 from .audio import Endpointer, webrtc_vad
@@ -237,7 +237,7 @@ class CallController:
                     try:
                         stamp = datetime.fromisoformat(delay.get("stamp", ""))
                         age = (datetime.now(UTC) - stamp).total_seconds()
-                    except ValueError, TypeError:
+                    except (ValueError, TypeError):
                         return
                     if age > self.config.ring_timeout:
                         return
@@ -280,13 +280,18 @@ class CallController:
             len(set(self.calls) | set(self._pending) | set(self._ringing)) >= self.config.max_calls
         )
 
-    @staticmethod
-    def _send(iq: Any) -> None:
-        """Fire an IQ set without waiting; a sleeping phone that never answers is not an error."""
+    def _send(self, iq: Any, sid: str | None = None) -> None:
+        """Fire an IQ set without waiting; a sleeping phone that never answers is not an error.
+        An error reply to a call's own setup IQ (`sid`) ends that call."""
 
         def done(future: Any) -> None:
-            if not future.cancelled() and (error := future.exception()) is not None:
-                logging.info("calls: no answer to our IQ: %s", type(error).__name__)
+            if future.cancelled() or (error := future.exception()) is None:
+                return
+            logging.info("calls: no good answer to our IQ: %s", type(error).__name__)
+            if sid is not None and isinstance(error, IqError) and sid in self.calls:
+                task = asyncio.create_task(self.end(sid, "connectivity-error"))
+                self._background.add(task)
+                task.add_done_callback(self._background.discard)
 
         pending = iq.send()
         if hasattr(pending, "add_done_callback"):  # the fake clients in tests send nothing
@@ -457,7 +462,7 @@ class CallController:
         self._pending.pop(jingle.sid, None)
         session.apply("session-accept", sent_by_us=True)
         accept = Jingle("session-accept", jingle.sid, contents=(content,), group=jingle.group)
-        self._send(self.client.make_iq_set(sub=wire.build(accept), ito=peer))
+        self._send(self.client.make_iq_set(sub=wire.build(accept), ito=peer), jingle.sid)
         call.tasks += [
             asyncio.create_task(self._limit(jingle.sid)),
             asyncio.create_task(self._greet(call)),
@@ -694,7 +699,7 @@ class CallController:
             contents=(content,),
             group=(content.name,),
         )
-        self._send(self.client.make_iq_set(sub=wire.build(initiate), ito=full))
+        self._send(self.client.make_iq_set(sub=wire.build(initiate), ito=full), sid)
         return call
 
     async def _deliver(

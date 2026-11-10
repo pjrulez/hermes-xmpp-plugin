@@ -468,7 +468,7 @@ def test_status_lines_from_a_partner_agent_are_not_answered():
     assert adapter._is_gateway_notice("⚡ Interrupting current task (iteration 2).")
     assert adapter._is_gateway_notice("⚠️ The model returned only a silence marker for a message")
     assert not adapter._is_gateway_notice("CALL REQUEST for x")
-    assert not adapter._is_gateway_notice("⚠️ Disk is almost full on mad")  # a real warning passes
+    assert not adapter._is_gateway_notice("⚠️ Disk is almost full on host-1")  # a real warning passes
     assert "[SILENT]" in adapter._AGENT_PROMPT
 
 
@@ -679,3 +679,22 @@ def test_xmpp_call_tool_refuses_a_long_opening_and_limits_calls(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
     assert all(r["success"] for r in results[:-1])
     assert not results[-1]["success"] and "too many calls" in results[-1]["status"]
+
+
+def test_filler_ignores_non_strings_and_caps_the_list():
+    def filler(value):
+        return adapter._calls_settings({"calls": {"filler": value}})["filler"]
+
+    assert filler(False) == () and filler([None, {"a": 1}, "ok"]) == ("ok",)
+    assert len(filler([f"p{i}" for i in range(50)])) == 20
+    assert len(filler(["x" * 1000])[0]) == 200
+    assert adapter._calls_settings({"calls": {"greeting": None}})["greeting"] == ""
+
+
+@omemo
+def test_two_storages_for_one_file_in_a_process_do_not_overwrite_each_other(tmp_path):
+    path = tmp_path / "omemo.json"
+    first, second = adapter._StorageImpl(path), adapter._StorageImpl(path)  # e.g. a reconnect
+    asyncio.run(first._store("/a", "one"))
+    asyncio.run(second._store("/b", "two"))
+    assert json.loads(path.read_text()) == {"/a": "one", "/b": "two"}

@@ -33,7 +33,7 @@ def webrtc_vad(level: int = 2) -> Callable[[np.ndarray], bool]:
     """Frame classifier from the WebRTC VAD, after a high-pass pre-emphasis.
 
     Steady hum, fan rumble and hiss are rejected, speech and slow room noise changes are not
-    confused for each other (measured: RESEARCH/evidence/endpointing.txt). Another voice in the
+    confused for each other (measured on recorded noise and speech). Another voice in the
     background still counts as speech; no frame classifier can tell them apart.
     """
     import webrtcvad
